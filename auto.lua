@@ -15,6 +15,8 @@ local ZoneCmds = require(Library.Client.ZoneCmds)
 local RebirthCmds = require(Library.Client.RebirthCmds)
 local MapCmds = require(Library.Client.MapCmds)
 local PetNetworking = require(Library.Client.PetNetworking)
+local RankCmds = require(Library.Client.RankCmds)
+local RanksDirectory = require(Library.Directory.Ranks)
 
 -- Load thư viện theo dõi biến
 local function loadUtils(url, file)
@@ -35,7 +37,7 @@ vm:Add("Euids", {}, "table")
 vm:Add("LastUseEuids", {}, "table")
 vm:Add("PetIDs", {}, "table")
 vm:Add("current_zone", nil, "string")
-vm:Add("NeedToFarmBreakables", false, "boolean") -- Công tắc bật/tắt Auto Farm
+vm:Add("NeedToFarmBreakables", false, "boolean")
 
 -- Hack Tốc độ chạy & Anti-AFK
 pcall(function() require(Library.Client.PlayerPet).CalculateSpeedMultiplier = function(...) return 200 end end)
@@ -261,7 +263,6 @@ task.spawn(function()
     local breakableOffset = 0
     while true do
         task.wait()
-        -- NẾU KHÔNG CÓ NHIỆM VỤ FARM THÌ ĐỨNG YÊN ĐỂ TIẾT KIỆM TÀI NGUYÊN
         if not vm:Get("NeedToFarmBreakables") then continue end
 
         local zone = vm:Get("current_zone")
@@ -304,15 +305,13 @@ task.spawn(function()
 end)
 
 --====================================================================--
---//        PHẦN 4: TỪ ĐIỂN NHIỆM VỤ & QUẢN LÝ NHIỆM VỤ (BRAIN)     //--
+--//        PHẦN 4: AUTO CLAIM (CỦA BẠN) & TỪ ĐIỂN NHIỆM VỤ        //--
 --====================================================================--
--- TỪ ĐIỂN DỊCH ID SANG CHỮ
 local GoalDictionary = {
-    [7] = "Earn %s", -- Sẽ thay thế %s bằng CurrencyID
+    [7] = "Earn %s", 
     [15] = "Collect Enchants",
     [21] = "Breakables in Best Area",
     [40] = "Make Golden Pets"
-    -- Chúng ta sẽ thêm các ID khác vào đây khi bạn gặp nhiệm vụ mới!
 }
 
 local function FormatValue(Value)
@@ -329,24 +328,44 @@ local function FormatValue(Value)
     return formatted .. suffixes[index]
 end
 
+-- Vòng lặp Auto Claim độc lập (Chống kẹt UI)
+task.spawn(function()
+    while task.wait(5) do
+        pcall(function()
+            local currentSave = Save.Get()
+            local totalStars = 0
+            local currentTitle = RankCmds.GetTitle()
+            
+            if RanksDirectory[currentTitle] and RanksDirectory[currentTitle].Rewards then
+                for i, v in pairs(RanksDirectory[currentTitle].Rewards) do
+                    totalStars = totalStars + v.StarsRequired
+                    if currentSave.RankStars >= totalStars and not currentSave.RedeemedRankRewards[tostring(i)] then
+                        Network.Fire("Ranks_ClaimReward", i)
+                        task.wait(0.5)
+                    end
+                end
+            end
+        end)
+    end
+end)
+
+-- Vòng lặp cập nhật UI & "Bộ Não" điều khiển
 task.spawn(function()
     while task.wait(1) do
         local data = Save.Get()
         
-        pcall(function() for i = 1, 99 do Network.Invoke("Rank: Claim Reward", i) end end)
-
         if data and data.Goals then
             local index = 1
-            local needToFarm = false -- Công tắc báo cho Pet đi cày
+            local needToFarm = false
             
             for goalId, goalData in pairs(data.Goals) do
                 if index > 4 then break end
                 
-                local typeId = goalData.type
-                local currentAmt = goalData.progress or 0
-                local targetAmt = goalData.amount or 1
+                -- ĐÃ FIX: Chữ cái đầu viết hoa (Type, Progress, Amount)
+                local typeId = goalData.Type
+                local currentAmt = goalData.Progress or 0
+                local targetAmt = goalData.Amount or 1
                 
-                -- BỘ DỊCH TÊN NHIỆM VỤ
                 local goalName = "Unknown Quest ID: " .. tostring(typeId)
                 if typeId == 7 then
                     goalName = string.format("Earn %s", tostring(goalData.CurrencyID or "Coins"))
@@ -354,12 +373,11 @@ task.spawn(function()
                     goalName = GoalDictionary[typeId]
                 end
 
-                -- BỘ NÃO ĐIỀU KHIỂN HÀNH ĐỘNG
+                -- Nếu thấy nhiệm vụ Đập Rương (ID 21) -> Cho phép thú cưng đi farm
                 if typeId == 21 and currentAmt < targetAmt then
-                    needToFarm = true -- Bật công tắc cho Pet ra đập rương
+                    needToFarm = true
                 end
                 
-                -- HIỂN THỊ LÊN UI
                 local percent = math.floor((currentAmt / targetAmt) * 100)
                 if percent > 100 then percent = 100 end
                 
@@ -375,7 +393,6 @@ task.spawn(function()
                 index = index + 1
             end
             
-            -- Truyền tín hiệu cho mảng Pet
             vm:Set("NeedToFarmBreakables", needToFarm)
 
             for i = index, 4 do QuestLabels[i].Text = "" end
