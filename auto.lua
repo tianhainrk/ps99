@@ -305,14 +305,23 @@ task.spawn(function()
 end)
 
 --====================================================================--
---//        PHẦN 4: AUTO CLAIM (CỦA BẠN) & TỪ ĐIỂN NHIỆM VỤ        //--
+--//        PHẦN 4: AUTO CLAIM & BỘ NÃO XỬ LÝ NHIỆM VỤ (V5)         //--
 --====================================================================--
 local GoalDictionary = {
     [7] = "Earn %s", 
     [15] = "Collect Enchants",
     [21] = "Breakables in Best Area",
-    [40] = "Make Golden Pets"
+    [34] = "Use Tier %s Potions",
+    [38] = "Break Comets in Best Area",
+    [40] = "Make Golden Pets",
+    [42] = "Hatch Legendary+ Pet"
 }
+
+-- Hàm đổi số sang số La Mã (Hiển thị UI)
+local function ToRoman(num)
+    local roman = {"I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"}
+    return roman[num] or tostring(num)
+end
 
 local function FormatValue(Value)
     local n = tonumber(Value)
@@ -328,7 +337,7 @@ local function FormatValue(Value)
     return formatted .. suffixes[index]
 end
 
--- Vòng lặp Auto Claim độc lập (Chống kẹt UI)
+-- Vòng lặp Auto Claim (Giữ nguyên)
 task.spawn(function()
     while task.wait(5) do
         pcall(function()
@@ -349,7 +358,7 @@ task.spawn(function()
     end
 end)
 
--- Vòng lặp cập nhật UI & "Bộ Não" điều khiển
+-- VÒNG LẶP CỦA BỘ NÃO (BRAIN LOOP)
 task.spawn(function()
     while task.wait(1) do
         local data = Save.Get()
@@ -361,23 +370,90 @@ task.spawn(function()
             for goalId, goalData in pairs(data.Goals) do
                 if index > 4 then break end
                 
-                -- ĐÃ FIX: Chữ cái đầu viết hoa (Type, Progress, Amount)
                 local typeId = goalData.Type
                 local currentAmt = goalData.Progress or 0
                 local targetAmt = goalData.Amount or 1
                 
+                -- 1. DỊCH TÊN NHIỆM VỤ
                 local goalName = "Unknown Quest ID: " .. tostring(typeId)
                 if typeId == 7 then
                     goalName = string.format("Earn %s", tostring(goalData.CurrencyID or "Coins"))
+                elseif typeId == 34 then
+                    goalName = string.format("Use Tier %s Potions", ToRoman(goalData.Tier or 1))
                 elseif GoalDictionary[typeId] then
                     goalName = GoalDictionary[typeId]
                 end
 
-                -- Nếu thấy nhiệm vụ Đập Rương (ID 21) -> Cho phép thú cưng đi farm
-                if typeId == 21 and currentAmt < targetAmt then
-                    needToFarm = true
+                -- ==========================================
+                -- 2. BỘ NÃO XỬ LÝ (GIẢI QUYẾT NHIỆM VỤ)
+                -- ==========================================
+                if currentAmt < targetAmt then
+                    
+                    -- NẾU LÀ ĐẬP RƯƠNG HOẶC ĐẬP COMET -> Xùy Pet ra cắn
+                    if typeId == 21 or typeId == 38 then
+                        needToFarm = true
+                    end
+                    
+                    -- AUTO SỬ DỤNG COMET (Chống lãng phí)
+                    if typeId == 38 then
+                        local lastProgress = vm:Get("CometProg_" .. goalId) or -1
+                        local lastTime = vm:Get("CometTime_" .. goalId) or 0
+                        
+                        -- Nếu tiến độ đã tăng (Comet cũ đã nổ) HOẶC chờ quá 30s mà chưa thấy nổ (Bị kẹt)
+                        if currentAmt ~= lastProgress or (os.clock() - lastTime > 30) then
+                            -- Lục tìm Comet trong kho Misc
+                            local miscInv = data.Inventory.Misc or {}
+                            local cometUid = nil
+                            for uid, item in pairs(miscInv) do
+                                if item.id == "Comet" then cometUid = uid; break end
+                            end
+                            
+                            if cometUid then
+                                -- Chốt lại tiến độ và thời gian
+                                vm:Set("CometProg_" .. goalId, currentAmt)
+                                vm:Set("CometTime_" .. goalId, os.clock())
+                                
+                                task.spawn(function()
+                                    -- Gửi lệnh xài 1 Comet (Dùng pcall bao bọc để chống lỗi nếu sai hàm)
+                                    pcall(function() Network.Invoke("Items: Consume", cometUid, 1) end)
+                                    pcall(function() Network.Invoke("Consume Item", cometUid, 1) end)
+                                end)
+                            end
+                        end
+                    end
+
+                    -- AUTO UỐNG POTION THÔNG MINH
+                    if typeId == 34 then
+                        local requiredTier = goalData.Tier or 1
+                        local neededToDrink = targetAmt - currentAmt
+                        local lastPotionUse = vm:Get("LastPotionUse_" .. goalId) or 0
+                        
+                        -- Cooldown 2 giây mỗi lần uống để server kịp cập nhật tiến độ
+                        if os.clock() - lastPotionUse > 2 then
+                            local potionInv = data.Inventory.Potion or {}
+                            for uid, item in pairs(potionInv) do
+                                -- tn = tier number (Cấp độ của thuốc)
+                                if item.id and item.tn == requiredTier then
+                                    local amountHas = item._am or 1
+                                    -- Tính toán uống đúng số lượng cần, không uống thừa
+                                    local consumeAmt = math.min(neededToDrink, amountHas)
+                                    
+                                    if consumeAmt > 0 then
+                                        vm:Set("LastPotionUse_" .. goalId, os.clock())
+                                        task.spawn(function()
+                                            pcall(function() Network.Invoke("Potions: Consume", uid, consumeAmt) end)
+                                        end)
+                                        break -- Uống xong 1 loại là thoát vòng lặp kho đồ
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    
                 end
-                
+                -- ==========================================
+
+                -- 3. CẬP NHẬT GIAO DIỆN (UI)
                 local percent = math.floor((currentAmt / targetAmt) * 100)
                 if percent > 100 then percent = 100 end
                 
@@ -393,6 +469,7 @@ task.spawn(function()
                 index = index + 1
             end
             
+            -- Truyền tín hiệu cho mảng Pet
             vm:Set("NeedToFarmBreakables", needToFarm)
 
             for i = index, 4 do QuestLabels[i].Text = "" end
