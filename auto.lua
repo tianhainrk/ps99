@@ -6,6 +6,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
 local Workspace = game:GetService("Workspace")
+local TeleportService = game:GetService("TeleportService")
 local LocalPlayer = Players.LocalPlayer
 
 local Library = ReplicatedStorage:WaitForChild("Library")
@@ -177,7 +178,7 @@ if OrbsFolder then
 end
 
 --====================================================================--
---//                 PHẦN 2: AUTO WORLD & REBIRTH                   //--
+--//                 PHẦN 2: AUTO WORLD DYNAMICS                    //--
 --====================================================================--
 local function GetZonePath(zoneNumber, zoneName)
     local expectedName = tostring(zoneNumber) .. " | " .. zoneName
@@ -191,12 +192,36 @@ local function GetZonePath(zoneNumber, zoneName)
     return nil
 end
 
+-- Bản đồ Máy chủ cập nhật chính xác
+local function GetTargetPlaceId(zoneNumber)
+    if zoneNumber <= 99 then
+        return 8737899170
+    elseif zoneNumber <= 199 then
+        return 16498369169
+    elseif zoneNumber <= 239 then
+        return 17503543197
+    else
+        return 140403681187145
+    end
+end
+
 local currentZone = ""
 
 local function teleportToMaxZone()
     local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
     if not zoneName or not maxZoneData then return end
     
+    -- XỬ LÝ NHẢY WORLD (CROSS-SERVER TELEPORT)
+    local targetPlaceId = GetTargetPlaceId(maxZoneData.ZoneNumber)
+    if game.PlaceId ~= targetPlaceId then
+        StatusLabel.Text = "Status: Switching World..."
+        pcall(function() Network.Invoke("Save") end) -- Lưu game cho chắc
+        TeleportService:Teleport(targetPlaceId, LocalPlayer)
+        task.wait(15) -- Dừng script chờ chuyển server
+        return
+    end
+    
+    -- DỊCH CHUYỂN BÌNH THƯỜNG TRONG CÙNG WORLD
     if currentZone ~= zoneName then
         currentZone = zoneName
         vm:Set("current_zone", currentZone)
@@ -305,10 +330,11 @@ task.spawn(function()
 end)
 
 --====================================================================--
---//        PHẦN 4: AUTO CLAIM & BỘ NÃO XỬ LÝ NHIỆM VỤ (V5)         //--
+--//        PHẦN 4: AUTO CLAIM & BỘ NÃO XỬ LÝ NHIỆM VỤ (V6.1)       //--
 --====================================================================--
 local GoalDictionary = {
     [7] = "Earn %s", 
+    [14] = "Collect Potions",
     [15] = "Collect Enchants",
     [21] = "Breakables in Best Area",
     [34] = "Use Tier %s Potions",
@@ -320,7 +346,7 @@ local GoalDictionary = {
 -- Hàm đổi số sang số La Mã (Hiển thị UI)
 local function ToRoman(num)
     local roman = {"I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"}
-    return roman[num] or tostring(num)
+    return roman[tonumber(num)] or tostring(num)
 end
 
 local function FormatValue(Value)
@@ -337,7 +363,7 @@ local function FormatValue(Value)
     return formatted .. suffixes[index]
 end
 
--- Vòng lặp Auto Claim (Giữ nguyên)
+-- Vòng lặp Auto Claim
 task.spawn(function()
     while task.wait(5) do
         pcall(function()
@@ -374,12 +400,15 @@ task.spawn(function()
                 local currentAmt = goalData.Progress or 0
                 local targetAmt = goalData.Amount or 1
                 
+                -- Lấy chuẩn Tier từ API của game
+                local requiredTier = goalData.PotionTier or goalData.Tier or 1
+                
                 -- 1. DỊCH TÊN NHIỆM VỤ
                 local goalName = "Unknown Quest ID: " .. tostring(typeId)
                 if typeId == 7 then
                     goalName = string.format("Earn %s", tostring(goalData.CurrencyID or "Coins"))
                 elseif typeId == 34 then
-                    goalName = string.format("Use Tier %s Potions", ToRoman(goalData.Tier or 1))
+                    goalName = string.format("Use Tier %s Potions", ToRoman(requiredTier))
                 elseif GoalDictionary[typeId] then
                     goalName = GoalDictionary[typeId]
                 end
@@ -389,67 +418,84 @@ task.spawn(function()
                 -- ==========================================
                 if currentAmt < targetAmt then
                     
-                    -- NẾU LÀ ĐẬP RƯƠNG HOẶC ĐẬP COMET -> Xùy Pet ra cắn
-                    if typeId == 21 or typeId == 38 then
-                        needToFarm = true
+                    if typeId == 21 or typeId == 38 or typeId == 14 or typeId == 15 then
+                        needToFarm = true 
                     end
                     
-                    -- AUTO SỬ DỤNG COMET (Chống lãng phí)
+                    -- AUTO SỬ DỤNG COMET (Tìm kiếm toàn diện kho đồ)
                     if typeId == 38 then
                         local lastProgress = vm:Get("CometProg_" .. goalId) or -1
                         local lastTime = vm:Get("CometTime_" .. goalId) or 0
                         
-                        -- Nếu tiến độ đã tăng (Comet cũ đã nổ) HOẶC chờ quá 30s mà chưa thấy nổ (Bị kẹt)
                         if currentAmt ~= lastProgress or (os.clock() - lastTime > 30) then
-                            -- Lục tìm Comet trong kho Misc
-                            local miscInv = data.Inventory.Misc or {}
                             local cometUid = nil
-                            for uid, item in pairs(miscInv) do
-                                if item.id == "Comet" then cometUid = uid; break end
+                            
+                            -- LỤC TUNG TOÀN BỘ KHO ĐỒ
+                            if data.Inventory then
+                                for categoryName, categoryData in pairs(data.Inventory) do
+                                    if type(categoryData) == "table" then
+                                        for uid, item in pairs(categoryData) do
+                                            -- Chỉ cần ID có chứa chữ "comet" là lấy!
+                                            if type(item.id) == "string" and string.find(string.lower(item.id), "comet") then
+                                                cometUid = uid
+                                                break
+                                            end
+                                        end
+                                    end
+                                    if cometUid then break end
+                                end
                             end
                             
                             if cometUid then
-                                -- Chốt lại tiến độ và thời gian
                                 vm:Set("CometProg_" .. goalId, currentAmt)
                                 vm:Set("CometTime_" .. goalId, os.clock())
                                 
                                 task.spawn(function()
-                                    -- Gửi lệnh xài 1 Comet (Dùng pcall bao bọc để chống lỗi nếu sai hàm)
+                                    -- Gửi đa dạng lệnh
+                                    pcall(function() Network.Invoke("Consume Item", cometUid) end)
                                     pcall(function() Network.Invoke("Items: Consume", cometUid, 1) end)
-                                    pcall(function() Network.Invoke("Consume Item", cometUid, 1) end)
+                                    pcall(function() Network.Fire("Consume Item", cometUid) end)
                                 end)
                             end
                         end
                     end
 
-                    -- AUTO UỐNG POTION THÔNG MINH
+                    -- AUTO UỐNG POTION (Tìm kiếm theo tn - tier number)
                     if typeId == 34 then
-                        local requiredTier = goalData.Tier or 1
                         local neededToDrink = targetAmt - currentAmt
-                        local lastPotionUse = vm:Get("LastPotionUse_" .. goalId) or 0
                         
-                        -- Cooldown 2 giây mỗi lần uống để server kịp cập nhật tiến độ
-                        if os.clock() - lastPotionUse > 2 then
-                            local potionInv = data.Inventory.Potion or {}
-                            for uid, item in pairs(potionInv) do
-                                -- tn = tier number (Cấp độ của thuốc)
-                                if item.id and item.tn == requiredTier then
-                                    local amountHas = item._am or 1
-                                    -- Tính toán uống đúng số lượng cần, không uống thừa
-                                    local consumeAmt = math.min(neededToDrink, amountHas)
-                                    
-                                    if consumeAmt > 0 then
-                                        vm:Set("LastPotionUse_" .. goalId, os.clock())
-                                        task.spawn(function()
-                                            pcall(function() Network.Invoke("Potions: Consume", uid, consumeAmt) end)
-                                        end)
-                                        break -- Uống xong 1 loại là thoát vòng lặp kho đồ
+                        if not vm:Get("IsDrinking_" .. goalId) then
+                            vm:Set("IsDrinking_" .. goalId, true)
+                            
+                            task.spawn(function()
+                                local targetUid = nil
+                                
+                                -- Lục trong thư mục Potion
+                                if data.Inventory and data.Inventory.Potion then
+                                    for uid, item in pairs(data.Inventory.Potion) do
+                                        -- Cứ bình nào có tier (tn) trùng khớp là lấy
+                                        if item.tn == requiredTier then
+                                            targetUid = uid
+                                            break
+                                        end
                                     end
                                 end
-                            end
+                                
+                                if targetUid then
+                                    for i = 1, neededToDrink do
+                                        pcall(function() Network.Invoke("Consume Item", targetUid) end)
+                                        pcall(function() Network.Invoke("Potions: Consume", targetUid, 1) end)
+                                        pcall(function() Network.Fire("Consume Item", targetUid) end)
+                                        
+                                        task.wait(0.15) 
+                                    end
+                                end
+                                
+                                task.wait(3) 
+                                vm:Set("IsDrinking_" .. goalId, false)
+                            end)
                         end
                     end
-                    
                 end
                 -- ==========================================
 
@@ -469,7 +515,6 @@ task.spawn(function()
                 index = index + 1
             end
             
-            -- Truyền tín hiệu cho mảng Pet
             vm:Set("NeedToFarmBreakables", needToFarm)
 
             for i = index, 4 do QuestLabels[i].Text = "" end
