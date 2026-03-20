@@ -14,19 +14,31 @@ local Network = require(Library.Client.Network)
 local ZoneCmds = require(Library.Client.ZoneCmds)
 local RebirthCmds = require(Library.Client.RebirthCmds)
 local MapCmds = require(Library.Client.MapCmds)
+local PetNetworking = require(Library.Client.PetNetworking)
 
--- Hack Tốc độ chạy (Lấy từ script cũ của bạn)
-pcall(function()
-    require(Library.Client.PlayerPet).CalculateSpeedMultiplier = function(...)
-        return 200
+-- Load thư viện theo dõi biến
+local function loadUtils(url, file)
+    local path = "Hasty-Utils/" .. file
+    local ok, res = pcall(game.HttpGet, game, url)
+    if ok and res then
+        if not isfolder("Hasty-Utils") then makefolder("Hasty-Utils") end
+        writefile(path, res)
+        return loadstring(res)()
     end
-end)
+    return loadstring(readfile(path))()
+end
+local vm = loadUtils("https://raw.githubusercontent.com/Paule1248/Open-Source/refs/heads/main/Utils/VariablesManager", "VariablesManager.lua")
+vm = vm:new()
 
--- Anti-AFK
-LocalPlayer.Idled:Connect(function() 
-    VirtualUser:CaptureController()
-    VirtualUser:ClickButton2(Vector2.new()) 
-end)
+vm:Add("AllBreakables", {}, "table")
+vm:Add("Euids", {}, "table")
+vm:Add("LastUseEuids", {}, "table")
+vm:Add("PetIDs", {}, "table")
+vm:Add("current_zone", nil, "string")
+
+-- Hack Tốc độ chạy & Anti-AFK
+pcall(function() require(Library.Client.PlayerPet).CalculateSpeedMultiplier = function(...) return 200 end end)
+LocalPlayer.Idled:Connect(function() VirtualUser:CaptureController(); VirtualUser:ClickButton2(Vector2.new()) end)
 
 --====================================================================--
 --//                     UI: AUTO RANK DASHBOARD                    //--
@@ -117,20 +129,70 @@ for i = 1, 4 do
 end
 
 --====================================================================--
---//                 PHẦN 1: AUTO WORLD & REBIRTH                   //--
+--//             PHẦN 1: QUẢN LÝ DỮ LIỆU & NHẶT ĐỒ THÔNG MINH       //--
 --====================================================================--
+-- 1.1 Quản lý rương (Tạo & Xóa)
+local function onBreakablesDestroyed(data)
+    if type(data) == "string" then vm:TableSet("AllBreakables", data, nil)
+    elseif type(data) == "table" then for _, v in pairs(data) do vm:TableSet("AllBreakables", v[1], nil) end end
+end
+local function onBreakablesCreated(data)
+    for _, v in pairs(data) do
+        if v[1] and v[1].u then vm:TableSet("AllBreakables", tostring(v[1].u), v[1]) end
+    end
+end
+Network.Fired("Breakables_Created"):Connect(onBreakablesCreated)
+Network.Fired("Breakables_Ping"):Connect(onBreakablesCreated)
+Network.Fired("Breakables_Destroyed"):Connect(onBreakablesDestroyed)
+Network.Fired("Breakables_DestroyDueToReplicationFail"):Connect(onBreakablesDestroyed)
+Network.Fired("Breakables_Cleanup"):Connect(function(data) for _, v in pairs(data) do vm:TableSet("AllBreakables", tostring(v[1]), nil) end end)
 
--- Hàm tìm Map động (Không cần dùng PlaceId, hỗ trợ tới World 99)
+-- 1.2 Quản lý Thú cưng
+local function updateEuids()
+    if type(PetNetworking.EquippedPets()) ~= "table" then return end
+    vm:TableClear("Euids"); vm:TableClear("PetIDs")
+    for petID, petData in pairs(PetNetworking.EquippedPets()) do
+        vm:TableSet("Euids", petID, petData); vm:TableInsert("PetIDs", petID)
+    end
+end
+updateEuids()
+Network.Fired("Pets_LocalPetsUpdated"):Connect(updateEuids)
+Network.Fired("Pets_LocalPetsUnequipped"):Connect(updateEuids)
+
+-- 1.3 Auto Nhặt Lootbags & Orbs (Kế thừa siêu tốc từ code cũ)
+local THINGS = Workspace:WaitForChild("__THINGS")
+local LootbagsFolder = THINGS:FindFirstChild("Lootbags")
+if LootbagsFolder then
+    LootbagsFolder.ChildAdded:Connect(function(bag)
+        task.wait()
+        if bag then
+            Network.Fire("Lootbags_Claim", { bag.Name })
+            bag:Destroy()
+        end
+    end)
+end
+local OrbsFolder = THINGS:FindFirstChild("Orbs")
+if OrbsFolder then
+    OrbsFolder.ChildAdded:Connect(function(orb)
+        task.wait()
+        if orb then
+            Network.Fire("Orbs: Collect", { tonumber(orb.Name) })
+            orb:Destroy()
+        end
+    end)
+end
+
+--====================================================================--
+--//                 PHẦN 2: AUTO WORLD & REBIRTH                   //--
+--====================================================================--
+-- Tìm Map tự động hỗ trợ tới World 99
 local function GetZonePath(zoneNumber, zoneName)
     local expectedName = tostring(zoneNumber) .. " | " .. zoneName
-    -- Quét các thư mục Map hiện có trong Workspace
     for _, folderName in ipairs({"Map", "Map2", "Map3", "Map4", "Map5", "Map6"}) do
         local mapFolder = Workspace:FindFirstChild(folderName)
         if mapFolder then
             local zoneFolder = mapFolder:FindFirstChild(expectedName)
-            if zoneFolder then
-                return zoneFolder
-            end
+            if zoneFolder then return zoneFolder end
         end
     end
     return nil
@@ -138,68 +200,132 @@ end
 
 local currentZone = ""
 
--- Hàm dịch chuyển chính xác (Kế thừa từ script của bạn)
+-- Dịch chuyển dùng BREAK_ZONES (Lấy từ script cũ)
 local function teleportToMaxZone()
     local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
     if not zoneName or not maxZoneData then return end
     
     if currentZone ~= zoneName then
         currentZone = zoneName
+        vm:Set("current_zone", currentZone)
         StatusLabel.Text = "Status: Teleporting to " .. zoneName
         
         local zonePath = GetZonePath(maxZoneData.ZoneNumber, zoneName)
-        if zonePath and zonePath:FindFirstChild("PERSISTENT") and zonePath.PERSISTENT:FindFirstChild("Teleport") then
-            LocalPlayer.Character:PivotTo(zonePath.PERSISTENT.Teleport.CFrame + Vector3.new(0, 3, 0))
+        if zonePath then
+            -- Bước 1: Dịch chuyển ra cổng map để nạp dữ liệu rương (Load map)
+            if zonePath:FindFirstChild("PERSISTENT") and zonePath.PERSISTENT:FindFirstChild("Teleport") then
+                LocalPlayer.Character:PivotTo(zonePath.PERSISTENT.Teleport.CFrame + Vector3.new(0, 5, 0))
+                task.wait(0.5)
+            end
+            
+            -- Bước 2: Tìm bãi đập rương (BREAK_ZONES) và bay vào giữa bãi
+            local interact = zonePath:WaitForChild("INTERACT", 3)
+            if interact then
+                local breakZones = interact:WaitForChild("BREAK_ZONES", 3)
+                if breakZones then
+                    local dist = math.huge
+                    local closestZone = nil
+                    local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        for _, v in pairs(breakZones:GetChildren()) do
+                            local mag = (hrp.Position - v.Position).Magnitude
+                            if mag < dist then
+                                dist = mag
+                                closestZone = v
+                            end
+                        end
+                        if closestZone then
+                            LocalPlayer.Character:PivotTo(closestZone.CFrame + Vector3.new(0, 10, 0))
+                        end
+                    end
+                end
+            end
         end
     end
 end
 
--- Vòng lặp Auto World
+-- Vòng lặp Mua Map / Rebirth
 task.spawn(function()
-    local nextRebirthData = RebirthCmds.GetNextRebirth()
-    local rebirthNumber = 999
-    local rebirthZone = 999
-    
-    if nextRebirthData then
-        rebirthNumber = nextRebirthData.RebirthNumber
-        rebirthZone = nextRebirthData.ZoneNumberRequired
-    end
+    local nextRebirthData = nil
+    pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
+    local rebirthNumber = nextRebirthData and nextRebirthData.RebirthNumber or 999
+    local rebirthZone = nextRebirthData and nextRebirthData.ZoneNumberRequired or 999
 
     while task.wait(1) do
         pcall(function()
             local nextZoneName, nextZoneData = ZoneCmds.GetNextZone()
-            
-            -- Nếu có map mới để mua
             if nextZoneName then
                 local success = Network.Invoke("Zones_RequestPurchase", nextZoneName)
                 if success then
                     StatusLabel.Text = "Status: Purchased " .. nextZoneName
-                    
-                    -- Kiểm tra xem đủ điều kiện Rebirth chưa
                     if nextZoneData.ZoneNumber >= rebirthZone then
                         StatusLabel.Text = "Status: Rebirthing..."
                         Network.Invoke("Rebirth_Request", tostring(rebirthNumber))
-                        task.wait(10) -- Đợi game load
-                        
-                        -- Cập nhật dữ liệu Rebirth mới
-                        nextRebirthData = RebirthCmds.GetNextRebirth()
-                        if nextRebirthData then
-                            rebirthNumber = nextRebirthData.RebirthNumber
-                            rebirthZone = nextRebirthData.ZoneNumberRequired
-                        end
+                        task.wait(10)
+                        pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
+                        rebirthNumber = nextRebirthData and nextRebirthData.RebirthNumber or 999
+                        rebirthZone = nextRebirthData and nextRebirthData.ZoneNumberRequired or 999
                     end
                     teleportToMaxZone()
                 end
             end
-            
-            -- Luôn giữ nhân vật ở Map cao nhất
             teleportToMaxZone()
         end)
     end
 end)
 
 --====================================================================--
---//             PHẦN 2: RANK TRACKER & AUTO CLAIM                  //--
+--//                   PHẦN 3: NÃO ĐIỀU KHIỂN PET & TAP             //--
+--====================================================================--
+task.spawn(function()
+    local breakableOffset = 0
+    while true do
+        task.wait()
+        local zone = vm:Get("current_zone")
+        if not zone then continue end
+
+        local availableBreakables = {}
+        for key, info in pairs(vm:Get("AllBreakables")) do
+            if info.pid == zone then table.insert(availableBreakables, key) end
+        end
+
+        if #availableBreakables > 0 then
+            local now = os.clock()
+            local lastUseEuids = vm:Get("LastUseEuids")
+            local bulkAssignments = {}
+            local firstTarget = nil -- Dùng để Auto Tap
+
+            for i, petID in ipairs(vm:Get("PetIDs")) do
+                if vm:Get("Euids")[petID] then
+                    local pool = availableBreakables
+                    local assignedKey = pool[((i - 1 + breakableOffset) % #pool) + 1]
+                    bulkAssignments[petID] = assignedKey
+                    vm:TableSet("LastUseEuids", petID, { time = now, breakableKey = assignedKey })
+                    
+                    if not firstTarget then firstTarget = assignedKey end
+                end
+            end
+
+            if next(bulkAssignments) then
+                -- Ném Pet ra farm
+                task.spawn(function() Network.Fire("Breakables_JoinPetBulk", bulkAssignments) end)
+                
+                -- Auto Tap (Nhân vật chưởng/click phụ thú cưng)
+                if firstTarget then
+                    task.spawn(function() Network.UnreliableFire("Breakables_PlayerDealDamage", firstTarget) end)
+                end
+                
+                task.wait(0.1) -- Tốc độ cào rương cực nhanh
+            end
+            breakableOffset = breakableOffset + 1
+        else
+            vm:Set("current_zone", nil); breakableOffset = 0
+        end
+    end
+end)
+
+--====================================================================--
+--//             PHẦN 4: RANK TRACKER & AUTO CLAIM                  //--
 --====================================================================--
 task.spawn(function()
     while task.wait(1) do
@@ -207,12 +333,10 @@ task.spawn(function()
         
         -- Auto Claim Quà Rank
         pcall(function()
-            for i = 1, 99 do
-                Network.Invoke("Rank: Claim Reward", i)
-            end
+            for i = 1, 99 do Network.Invoke("Rank: Claim Reward", i) end
         end)
 
-        -- Hiển thị thông tin Quest
+        -- Đọc Quest
         if data and data.Goals then
             local index = 1
             for goalId, goalData in pairs(data.Goals) do
@@ -226,7 +350,6 @@ task.spawn(function()
                 if percent > 100 then percent = 100 end
                 
                 local textStr = string.format("📌 [%s] : %d / %d (%d%%)", goalType, currentAmt, targetAmt, percent)
-                
                 if currentAmt >= targetAmt then
                     QuestLabels[index].TextColor3 = Color3.fromRGB(50, 255, 50)
                     textStr = "✅ " .. goalType .. " - COMPLETED!"
@@ -238,9 +361,9 @@ task.spawn(function()
                 index = index + 1
             end
             
-            for i = index, 4 do
-                QuestLabels[i].Text = ""
-            end
+            for i = index, 4 do QuestLabels[i].Text = "" end
+        else
+            QuestLabels[1].Text = "Waiting for Quest Data..."
         end
     end
 end)
