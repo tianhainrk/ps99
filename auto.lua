@@ -173,7 +173,7 @@ if OrbsFolder then
 end
 
 --====================================================================--
---//        PHẦN 2: AUTO WORLD DYNAMICS (ĐÃ FIX KẸT 199)            //--
+--//        PHẦN 2: AUTO WORLD & VŨ KHÍ SERVER HOP (V8.1)           //--
 --====================================================================--
 local function GetZonePath(zoneNumber, zoneName)
     local expectedName = tostring(zoneNumber) .. " | " .. zoneName
@@ -196,13 +196,73 @@ end
 
 local currentZone = ""
 
+-- THUẬT TOÁN SERVER HOP CỦA BẠN (Đã tinh chỉnh cho Đa Vũ Trụ)
+local function ServerHop(targetPlaceId)
+    StatusLabel.Text = "Status: Server Hopping to " .. tostring(targetPlaceId)
+    pcall(function() Network.Invoke("Save") end)
+    task.wait(2)
+
+    local HttpService = game:GetService("HttpService")
+    local TeleportService = game:GetService("TeleportService")
+    
+    local function getServers()
+        local url = 'https://games.roblox.com/v1/games/' .. tostring(targetPlaceId) .. '/servers/Public?sortOrder=Asc&limit=100'
+        local servers = nil
+        
+        -- Thử lấy dữ liệu bằng HttpGet
+        local success, res = pcall(function() return game:HttpGet(url) end)
+        if success and res then
+            local decoded = HttpService:JSONDecode(res)
+            if decoded and decoded.data then servers = decoded.data end
+        end
+        
+        -- Nếu Executor không hỗ trợ HttpGet, dùng phương pháp Backup (Request)
+        if not servers then
+            pcall(function()
+                local req = (request or http and http.request or http_request or syn and syn.request)
+                if req then
+                    local response = req({Url = url, Method = "GET", Headers = { ["Content-Type"] = "application/json" }})
+                    if response and response.Body then
+                        servers = HttpService:JSONDecode(response.Body).data
+                    end
+                end
+            end)
+        end
+        
+        return servers
+    end
+
+    local servers = getServers()
+    if servers and #servers > 0 then
+        -- Lọc ra các server chưa đầy
+        local validServers = {}
+        for _, s in ipairs(servers) do
+            if s.playing and s.maxPlayers and s.playing < s.maxPlayers - 1 then
+                table.insert(validServers, s)
+            end
+        end
+        
+        if #validServers > 0 then
+            -- Chọn ngẫu nhiên 1 server y như ý tưởng của bạn
+            local randomServer = validServers[math.random(1, #validServers)]
+            pcall(function()
+                TeleportService:TeleportToPlaceInstance(targetPlaceId, randomServer.id, LocalPlayer)
+            end)
+            return
+        end
+    end
+    
+    -- Nếu thất bại toàn tập, xài Teleport thường của Roblox
+    pcall(function() TeleportService:Teleport(targetPlaceId, LocalPlayer) end)
+end
+
 local function teleportToMaxZone()
     local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
     if not zoneName or not maxZoneData then return end
     
     local targetPlaceId = GetTargetPlaceId(maxZoneData.ZoneNumber)
     
-    -- CẦU CHÌ KHÔNG GIAN: Nếu kẹt ở map cuối cùng của World mà không còn Yêu cầu Rebirth nào
+    -- CẦU CHÌ KHÔNG GIAN
     local nextRebirthData = nil
     pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
     if not nextRebirthData then
@@ -211,15 +271,14 @@ local function teleportToMaxZone()
         if maxZoneData.ZoneNumber == 239 then targetPlaceId = 140403681187145 end
     end
 
+    -- NẾU PHÁT HIỆN SAI MÁY CHỦ -> KÍCH HOẠT SERVER HOP CỦA BẠN
     if game.PlaceId ~= targetPlaceId then
-        StatusLabel.Text = "Status: Switching World (" .. tostring(targetPlaceId) .. ")"
-        pcall(function() Network.Invoke("Save") end)
-        task.wait(2)
-        TeleportService:Teleport(targetPlaceId, LocalPlayer)
-        task.wait(15)
+        ServerHop(targetPlaceId)
+        task.wait(15) -- Nghỉ chờ bay
         return
     end
     
+    -- DỊCH CHUYỂN BÌNH THƯỜNG
     if currentZone ~= zoneName then
         currentZone = zoneName
         vm:Set("current_zone", currentZone)
@@ -252,6 +311,7 @@ local function teleportToMaxZone()
     end
 end
 
+-- Vòng lặp Mua Map và Tái Sinh
 task.spawn(function()
     while task.wait(1) do
         pcall(function()
@@ -268,11 +328,13 @@ task.spawn(function()
                     return
                 end
             end
+            
             local nextZoneName, nextZoneData = ZoneCmds.GetNextZone()
             if nextZoneName then
                 local success = Network.Invoke("Zones_RequestPurchase", nextZoneName)
                 if success then StatusLabel.Text = "Status: Purchased " .. nextZoneName end
             end
+            
             teleportToMaxZone()
         end)
     end
