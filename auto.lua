@@ -175,6 +175,50 @@ end
 --====================================================================--
 --//        PHẦN 2: AUTO WORLD & VŨ KHÍ SERVER HOP (V8.1)           //--
 --====================================================================--
+-- WORLD COMPLETION SYSTEM (NEW)
+local WORLD_COMPLETION = {
+    [1] = 99,
+    [2] = 199,
+    [3] = 239
+}
+
+local WORLD_PLACE_IDS = {
+    [1] = 8737899170,
+    [2] = 16498369169,
+    [3] = 17503543197,
+    [4] = 140403681187145
+}
+
+local function GetCurrentWorld()
+    for world, placeId in pairs(WORLD_PLACE_IDS) do
+        if game.PlaceId == placeId then
+            return world
+        end
+    end
+    return 1
+end
+
+local function CheckAndHopWorld()
+    local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
+    if not maxZoneData then return end
+
+    local currentWorld = GetCurrentWorld()
+    local maxZone = maxZoneData.ZoneNumber
+    local requiredZone = WORLD_COMPLETION[currentWorld]
+
+    if requiredZone and maxZone >= requiredZone then
+        local nextWorld = currentWorld + 1
+        local targetPlaceId = WORLD_PLACE_IDS[nextWorld]
+
+        if targetPlaceId and game.PlaceId ~= targetPlaceId then
+            StatusLabel.Text = "Status: Moving to World " .. tostring(nextWorld)
+            ServerHop(targetPlaceId)
+            task.wait(15)
+        end
+    end
+end
+
+
 local function GetZonePath(zoneNumber, zoneName)
     local expectedName = tostring(zoneNumber) .. " | " .. zoneName
     for _, folderName in ipairs({"Map", "Map2", "Map3", "Map4", "Map5", "Map6"}) do
@@ -315,19 +359,24 @@ end
 task.spawn(function()
     while task.wait(1) do
         pcall(function()
+	CheckAndHopWorld()
             local nextRebirthData = nil
             pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
             
             if nextRebirthData then
-                local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
-                if maxZoneData and maxZoneData.ZoneNumber >= nextRebirthData.ZoneNumberRequired then
-                    StatusLabel.Text = "Status: Rebirthing..."
-                    Network.Invoke("Rebirth_Request", tostring(nextRebirthData.RebirthNumber))
-                    task.wait(10)
-                    currentZone = ""; vm:Set("current_zone", nil)
-                    return
-                end
-            end
+    local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
+    if maxZoneData and maxZoneData.ZoneNumber >= nextRebirthData.ZoneNumberRequired then
+        StatusLabel.Text = "Status: Rebirthing..."
+
+        local oldRebirth = Save.Get().Rebirth or 0
+        Network.Invoke("Rebirth_Request", tostring(nextRebirthData.RebirthNumber))
+
+        repeat task.wait(1) until (Save.Get().Rebirth or 0) > oldRebirth
+
+        currentZone = ""
+        vm:Set("current_zone", nil)
+    end
+end
             
             local nextZoneName, nextZoneData = ZoneCmds.GetNextZone()
             if nextZoneName then
