@@ -178,37 +178,33 @@ if OrbsFolder then
 end
 
 --====================================================================--
---//                 PHẦN 2: AUTO WORLD DYNAMICS (DEBUG LOG)          //--
+--//                 PHẦN 2: AUTO WORLD DYNAMICS (FIX CROSS-WORLD)    //--
 --====================================================================--
 
 local function GetTargetPlaceId(zoneNumber)
     if zoneNumber <= 99 then
-        return 8737899170      -- World 1 (Spawn)
+        return 8737899170      -- World 1
     elseif zoneNumber <= 199 then
-        return 16498369169     -- World 2 (Tech World)
+        return 16498369169     -- World 2
     elseif zoneNumber <= 299 then
-        return 17503543197     -- World 3 (Void World) - confirmed active 2026
+        return 17503543197     -- World 3 (Void)
     else
-        return 140403681187145 -- World 4 / Event / Hub (nếu mở rộng)
+        return 140403681187145 -- World 4+
     end
 end
 
 local function GetZonePath(zoneNumber, zoneName)
     local expectedName = tostring(zoneNumber) .. " | " .. zoneName
-    print("[DEBUG] Tìm zone path: Expected name = '" .. expectedName .. "'")
+    print("[DEBUG] Tìm zone path: " .. expectedName)
     
     for _, folderName in ipairs({"Map", "Map2", "Map3", "Map4", "Map5", "Map6"}) do
         local mapFolder = Workspace:FindFirstChild(folderName)
-        if mapFolder then
-            print("[DEBUG] Kiểm tra folder: " .. folderName)
-            local zoneFolder = mapFolder:FindFirstChild(expectedName)
-            if zoneFolder then 
-                print("[DEBUG] TÌM THẤY zone path: " .. folderName .. " > " .. expectedName)
-                return zoneFolder 
-            end
+        if mapFolder and mapFolder:FindFirstChild(expectedName) then
+            print("[DEBUG] ✓ TÌM THẤY zone path trong " .. folderName)
+            return mapFolder[expectedName]
         end
     end
-    print("[DEBUG] KHÔNG TÌM THẤY zone path cho: " .. expectedName)
+    print("[DEBUG] ✗ Không tìm thấy zone path")
     return nil
 end
 
@@ -217,61 +213,34 @@ local lastTeleportAttempt = 0
 
 local function teleportToTargetWorld()
     local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
-    if not maxZoneData then 
-        print("[DEBUG] GetMaxOwnedZone() trả về nil - có thể save chưa load")
+    if not maxZoneData then return false end
+    
+    local targetPlaceId = GetTargetPlaceId(maxZoneData.ZoneNumber)
+    if game.PlaceId == targetPlaceId then 
+        print("[DEBUG] Đã ở đúng world")
         return false 
     end
     
-    local currentPlaceId = game.PlaceId
-    local targetPlaceId = GetTargetPlaceId(maxZoneData.ZoneNumber)
+    if os.clock() - lastTeleportAttempt < 20 then return false end
+    lastTeleportAttempt = os.clock()
     
-    print("[DEBUG] Max Zone: #" .. maxZoneData.ZoneNumber .. " | Tên: " .. (zoneName or "nil"))
-    print("[DEBUG] Current PlaceId: " .. currentPlaceId .. " | Target PlaceId: " .. targetPlaceId)
+    local worldNum = targetPlaceId == 8737899170 and "1" or targetPlaceId == 16498369169 and "2" or targetPlaceId == 17503543197 and "3" or "4+"
     
-    if currentPlaceId ~= targetPlaceId then
-        if os.clock() - lastTeleportAttempt < 20 then 
-            print("[DEBUG] Teleport cooldown còn " .. math.floor(20 - (os.clock() - lastTeleportAttempt)) .. " giây")
-            return false 
-        end
-        
-        lastTeleportAttempt = os.clock()
-        
-        local worldNum = (targetPlaceId == 8737899170 and "1" or 
-                          targetPlaceId == 16498369169 and "2" or 
-                          targetPlaceId == 17503543197 and "3" or "4+")
-        
-        StatusLabel.Text = "Status: Chuyển sang World " .. worldNum .. " (Zone #" .. maxZoneData.ZoneNumber .. ")"
-        print("[TELEPORT] BẮT ĐẦU CHUYỂN WORLD → World " .. worldNum .. " (PlaceId: " .. targetPlaceId .. ")")
-        
-        pcall(function() 
-            Network.Invoke("Save") 
-            print("[DEBUG] Đã gọi Save() trước teleport")
-        end)
-        task.wait(0.8)
-        
-        local success, err = pcall(function()
-            TeleportService:Teleport(targetPlaceId, LocalPlayer)
-        end)
-        
-        if success then
-            print("[TELEPORT] Gọi TeleportService thành công - chờ chuyển server...")
-        else
-            print("[TELEPORT ERROR] Teleport thất bại: " .. tostring(err))
-        end
-        
-        task.wait(15) -- chờ load server mới
-        return true
-    else
-        print("[DEBUG] Đã ở đúng world (PlaceId khớp)")
-        return false
-    end
+    StatusLabel.Text = "Status: Chuyển sang World " .. worldNum .. " (Zone #" .. maxZoneData.ZoneNumber .. ")"
+    print("[TELEPORT] 🔥 BẮT ĐẦU CHUYỂN WORLD → World " .. worldNum .. " (PlaceId: " .. targetPlaceId .. ")")
+    
+    pcall(function() Network.Invoke("Save") end)
+    task.wait(0.8)
+    
+    TeleportService:Teleport(targetPlaceId, LocalPlayer)
+    task.wait(15)
+    return true
 end
 
--- ==================== VÒNG LẶP CHÍNH VỚI DEBUG ====================
+-- ==================== VÒNG LẶP CHÍNH (ĐÃ FIX) ====================
 task.spawn(function()
     local nextRebirthData = nil
     pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
-    print("[DEBUG] Next Rebirth: " .. (nextRebirthData and nextRebirthData.RebirthNumber or "nil"))
 
     while task.wait(1.2) do
         pcall(function()
@@ -279,7 +248,6 @@ task.spawn(function()
             if nextRebirthData then
                 local _, maxZoneData = ZoneCmds.GetMaxOwnedZone()
                 if maxZoneData and maxZoneData.ZoneNumber >= nextRebirthData.ZoneNumberRequired then
-                    StatusLabel.Text = "Status: Rebirthing..."
                     print("[REBIRTH] Thực hiện Rebirth #" .. nextRebirthData.RebirthNumber)
                     Network.Invoke("Rebirth_Request", tostring(nextRebirthData.RebirthNumber))
                     task.wait(8)
@@ -289,73 +257,66 @@ task.spawn(function()
                 end
             end
 
-            -- 2. Mua zone mới
+            -- 2. XỬ LÝ MUA ZONE (ĐÃ THÊM KIỂM TRA WORLD)
             local nextZoneName, nextZoneData = ZoneCmds.GetNextZone()
             if nextZoneName and nextZoneData then
-                print("[DEBUG] Next Zone khả dụng: " .. nextZoneName .. " (Zone #" .. nextZoneData.ZoneNumber .. ")")
-                local success = Network.Invoke("Zones_RequestPurchase", nextZoneName)
-                if success then
-                    StatusLabel.Text = "Status: Đã mua " .. nextZoneName
-                    print("[PURCHASE] Thành công mua zone: " .. nextZoneName)
-                    task.wait(1.5)
+                local nextTargetPlace = GetTargetPlaceId(nextZoneData.ZoneNumber)
+                
+                print("[DEBUG] Next Zone: " .. nextZoneName .. " (Zone #" .. nextZoneData.ZoneNumber .. ")")
+                print("[DEBUG] Next Zone thuộc world: " .. (nextTargetPlace == 8737899170 and "1" or nextTargetPlace == 16498369169 and "2" or nextTargetPlace == 17503543197 and "3" or "4+"))
+                
+                if nextTargetPlace ~= game.PlaceId then
+                    -- 🔥 QUAN TRỌNG: KHÔNG MUA zone cross-world
+                    print("[CROSS-WORLD] Next zone thuộc world khác → BỎ QUA MUA, chuyển world trước!")
+                    teleportToTargetWorld()
                 else
-                    print("[PURCHASE] Thất bại mua zone: " .. nextZoneName)
+                    -- Chỉ mua khi zone nằm trong world hiện tại
+                    local success = Network.Invoke("Zones_RequestPurchase", nextZoneName)
+                    if success then
+                        print("[PURCHASE] ✓ Thành công mua " .. nextZoneName)
+                        StatusLabel.Text = "Status: Đã mua " .. nextZoneName
+                        task.wait(1.5)
+                    else
+                        print("[PURCHASE] ✗ Thất bại mua zone (có thể chưa đủ tiền)")
+                    end
                 end
             else
                 print("[DEBUG] Không có zone mới để mua")
             end
 
-            -- 3. Teleport logic
+            -- 3. Teleport logic (sẽ tự chuyển nếu cần)
             local _, maxZoneData = ZoneCmds.GetMaxOwnedZone()
             local zoneToUse = nextZoneData or maxZoneData
             
             if zoneToUse then
-                print("[DEBUG] Zone mục tiêu: #" .. zoneToUse.ZoneNumber .. " | " .. (zoneToUse.ZoneName or "nil"))
-                
                 local teleported = teleportToTargetWorld()
                 
-                if not teleported then
-                    -- Cùng world → dịch chuyển đến zone
-                    if currentZone ~= zoneToUse.ZoneName then
-                        currentZone = zoneToUse.ZoneName
-                        vm:Set("current_zone", currentZone)
-                        StatusLabel.Text = "Status: Đến " .. currentZone
-                        print("[TP IN-WORLD] Dịch chuyển đến zone: " .. currentZone)
+                if not teleported and currentZone ~= zoneToUse.ZoneName then
+                    currentZone = zoneToUse.ZoneName
+                    vm:Set("current_zone", currentZone)
+                    StatusLabel.Text = "Status: Đến " .. currentZone
+                    print("[TP IN-WORLD] Di chuyển đến zone: " .. currentZone)
 
-                        local zonePath = GetZonePath(zoneToUse.ZoneNumber, zoneToUse.ZoneName)
-                        if zonePath and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-                            local hrp = LocalPlayer.Character.HumanoidRootPart
-                            local interact = zonePath:WaitForChild("INTERACT", 3)
-                            if interact then
-                                local breakZones = interact:WaitForChild("BREAK_ZONES", 3)
-                                if breakZones then
-                                    local closest, minDist = nil, math.huge
-                                    for _, v in pairs(breakZones:GetChildren()) do
-                                        local dist = (hrp.Position - v.Position).Magnitude
-                                        if dist < minDist then minDist = dist; closest = v end
-                                    end
-                                    if closest then
-                                        print("[TP IN-WORLD] PivotTo vị trí break zone gần nhất")
-                                        LocalPlayer.Character:PivotTo(closest.CFrame + Vector3.new(0, 12, 0))
-                                        task.wait(0.6)
-                                    else
-                                        print("[DEBUG] Không tìm thấy break zone nào")
-                                    end
-                                else
-                                    print("[DEBUG] Không tìm thấy BREAK_ZONES")
+                    local zonePath = GetZonePath(zoneToUse.ZoneNumber, zoneToUse.ZoneName)
+                    if zonePath and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                        local hrp = LocalPlayer.Character.HumanoidRootPart
+                        local interact = zonePath:WaitForChild("INTERACT", 3)
+                        if interact then
+                            local breakZones = interact:WaitForChild("BREAK_ZONES", 3)
+                            if breakZones then
+                                local closest, minDist = nil, math.huge
+                                for _, v in pairs(breakZones:GetChildren()) do
+                                    local dist = (hrp.Position - v.Position).Magnitude
+                                    if dist < minDist then minDist = dist; closest = v end
                                 end
-                            else
-                                print("[DEBUG] Không tìm thấy INTERACT")
+                                if closest then
+                                    LocalPlayer.Character:PivotTo(closest.CFrame + Vector3.new(0, 12, 0))
+                                    task.wait(0.6)
+                                end
                             end
-                        else
-                            print("[DEBUG] Không có zonePath hoặc HRP")
                         end
-                    else
-                        print("[DEBUG] Đã ở đúng zone: " .. currentZone)
                     end
                 end
-            else
-                print("[DEBUG] Không có zoneToUse (max/next đều nil)")
             end
         end)
     end
