@@ -191,7 +191,6 @@ local currentZone = ""
 local centerPoint = nil
 local lastPosUpdate = os.clock()
 
--- [ĐÃ SỬA]: Thêm tham số zoneName và kiểm tra IsA("Folder")/IsA("Model") để chống kẹt ở rương
 local function GetZonePath(zoneNumber, zoneName)
     local searchPattern = "^" .. tostring(zoneNumber) .. " | " .. tostring(zoneName)
     for _, folderName in ipairs({"Map", "Map2", "Map3", "Map4", "Map5", "Map6"}) do
@@ -199,7 +198,6 @@ local function GetZonePath(zoneNumber, zoneName)
         if mapFolder then
             for _, zoneFolder in pairs(mapFolder:GetChildren()) do
                 if string.find(zoneFolder.Name, searchPattern) then 
-                    -- Thêm lớp bảo vệ: Chỉ nhận Thư mục hoặc Model (Khu vực chính), bỏ qua các Part lẻ (Rương)
                     if zoneFolder:IsA("Folder") or zoneFolder:IsA("Model") then
                         return zoneFolder 
                     end
@@ -235,13 +233,15 @@ local function teleportToMaxZone(zoneName, maxZoneData)
     if _G.PreparingToHop then return end 
     
     if currentZone ~= zoneName then
-        currentZone = zoneName
-        vm:Set("current_zone", currentZone)
-        StatusLabel.Text = "Status: Teleporting to " .. zoneName
-        
-        -- [ĐÃ SỬA]: Cập nhật truyền thêm tham số zoneName vào đây
         local zonePath = GetZonePath(maxZoneData.ZoneNumber, zoneName)
+        
         if zonePath then
+            currentZone = zoneName
+            vm:Set("current_zone", currentZone)
+            StatusLabel.Text = "Status: Teleporting to " .. zoneName
+            
+            centerPoint = nil
+            
             if zonePath:FindFirstChild("PERSISTENT") and zonePath.PERSISTENT:FindFirstChild("Teleport") then
                 LocalPlayer.Character:PivotTo(zonePath.PERSISTENT.Teleport.CFrame + Vector3.new(0, 5, 0))
                 task.wait(0.5)
@@ -263,6 +263,8 @@ local function teleportToMaxZone(zoneName, maxZoneData)
                     end
                 end
             end
+        else
+            StatusLabel.Text = "Status: Waiting for map graphics to load..."
         end
     end
 end
@@ -288,10 +290,20 @@ task.spawn(function()
             if nextRebirthData and maxZoneData.ZoneNumber >= nextRebirthData.ZoneNumberRequired then
                 StatusLabel.Text = "Status: Rebirthing in 5s..."
                 task.wait(5) 
-                Network.Invoke("Rebirth_Request", tostring(nextRebirthData.RebirthNumber))
-                currentZone = ""
-                vm:Set("current_zone", nil)
-                centerPoint = nil 
+                
+                local success = pcall(function()
+                    Network.Invoke("Rebirth_Request", tostring(nextRebirthData.RebirthNumber))
+                end)
+                
+                -- [ĐÃ SỬA THEO Ý BẠN]: Đợi 10s sau đó xóa dữ liệu cũ. 
+                -- Vòng lặp ngay sau đó sẽ tự quét map cao nhất và gọi hàm teleportToMaxZone.
+                if success then
+                    StatusLabel.Text = "Status: Rebirth Success! Waiting 10s to rescan..."
+                    task.wait(10)
+                    currentZone = ""
+                    vm:Set("current_zone", nil)
+                    centerPoint = nil 
+                end
                 return
             end
             
@@ -305,7 +317,6 @@ task.spawn(function()
             local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
             if hrp then
                 if not centerPoint or (currentZone ~= zoneName) then
-                    -- [ĐÃ SỬA]: Cập nhật truyền thêm tham số zoneName vào đây
                     local zonePath = GetZonePath(maxZoneData.ZoneNumber, zoneName)
                     if zonePath and zonePath:FindFirstChild("INTERACT") then
                         local bZones = zonePath.INTERACT:FindFirstChild("BREAK_ZONES")
