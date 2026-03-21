@@ -478,7 +478,28 @@ end)
 --//           PHẦN 6: BỘ NÃO XỬ LÝ NHIỆM VỤ (QUEST BRAIN V2)       //--
 --====================================================================--
 
--- ==================== 2 HÀM MỚI (TỔNG HỢP TỪ TẤT CẢ SCRIPT BẠN GỬI) ====================
+local GoalDictionary = {
+    [7] = "Earn %s", [14] = "Collect Potions", [15] = "Collect Enchants",
+    [21] = "Breakables in Best Area", [34] = "Use Tier %s Potions",
+    [38] = "Break Comets in Best Area", [40] = "Make Golden Pets", [42] = "Hatch Legendary+ Pet"
+}
+
+local function ToRoman(num)
+    local roman = {"I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"}
+    return roman[tonumber(num)] or tostring(num)
+end
+
+local function FormatValue(Value)
+    local n = tonumber(Value)
+    if not n then return tostring(Value) end
+    local suffixes = {"", "k", "m", "b", "t"}
+    local index = 1
+    local absNumber = math.abs(n)
+    while absNumber >= 1000 and index < #suffixes do absNumber = absNumber / 1000; index = index + 1 end
+    return (absNumber >= 1 and index > 1) and string.format("%.2f", absNumber):gsub("%.00$", "") .. suffixes[index] or tostring(math.floor(absNumber)) .. suffixes[index]
+end
+
+-- ==================== 2 HÀM MỚI ĐÃ ĐƯỢC FIX LUỒNG (THREAD) ====================
 local function AutoConsumeComet(goalId, needed)
     if vm:Get("IsProcessingComet_" .. goalId) then return end
     vm:Set("IsProcessingComet_" .. goalId, true)
@@ -488,7 +509,6 @@ local function AutoConsumeComet(goalId, needed)
     local data = Save.Get()
     local cometUid = nil
     
-    -- Tìm Comet chính xác (từ Lucky Raid script)
     if data and data.Inventory then
         for category, items in pairs(data.Inventory) do
             if type(items) == "table" then
@@ -508,21 +528,23 @@ local function AutoConsumeComet(goalId, needed)
         return
     end
     
-    for i = 1, needed do
-        pcall(function()
-            Network.Invoke("Consume Item", cometUid)
-            Network.Invoke("Items: Consume", cometUid, 1)
-            Network.Fire("Consume Item", cometUid)
-            -- Fallback từ Flower Garden style
-            pcall(function() Network.Invoke("Instancing_InvokeCustomFromClient", "Main", "ConsumeItem", cometUid) end)
-        end)
-        task.wait(0.45)  -- delay an toàn để server cập nhật progress
-    end
-    
-    task.wait(2) -- chờ quest sync
-    vm:Set("CometProg_" .. goalId, nil)
-    vm:Set("IsProcessingComet_" .. goalId, false)
-    print("[QUEST] Đã dùng xong " .. needed .. " Comet!")
+    -- BỌC TASK.SPAWN ĐỂ KHÔNG LÀM ĐÓNG BĂNG UI
+    task.spawn(function()
+        for i = 1, needed do
+            pcall(function()
+                Network.Invoke("Consume Item", cometUid)
+                Network.Invoke("Items: Consume", cometUid, 1)
+                Network.Fire("Consume Item", cometUid)
+                pcall(function() Network.Invoke("Instancing_InvokeCustomFromClient", "Main", "ConsumeItem", cometUid) end)
+            end)
+            task.wait(0.45) 
+        end
+        
+        task.wait(2) 
+        vm:Set("CometProg_" .. goalId, nil)
+        vm:Set("IsProcessingComet_" .. goalId, false)
+        print("[QUEST] Đã dùng xong " .. needed .. " Comet!")
+    end)
 end
 
 local function AutoConsumePotion(goalId, requiredTier, needed)
@@ -534,7 +556,6 @@ local function AutoConsumePotion(goalId, requiredTier, needed)
     local data = Save.Get()
     local potionUid = nil
     
-    -- Tìm Potion đúng tier (từ Lucky Raid + Auto Fuse style)
     if data and data.Inventory and data.Inventory.Potion then
         for uid, item in pairs(data.Inventory.Potion) do
             if item.tn == requiredTier then
@@ -549,80 +570,98 @@ local function AutoConsumePotion(goalId, requiredTier, needed)
         return
     end
     
-    for i = 1, needed do
-        pcall(function()
-            Network.Invoke("Consume Item", potionUid)
-            Network.Invoke("Potions: Consume", potionUid, 1)
-            Network.Fire("Consume Item", potionUid)
-            pcall(function() Network.Invoke("Items: Consume", potionUid, 1) end)
-        end)
-        task.wait(0.4)
-    end
-    
-    task.wait(2)
-    vm:Set("IsDrinking_" .. goalId, false)
-    vm:Set("IsProcessingPotion_" .. goalId, false)
-    print("[QUEST] Đã uống xong " .. needed .. " Potion Tier " .. requiredTier)
+    -- BỌC TASK.SPAWN ĐỂ KHÔNG LÀM ĐÓNG BĂNG UI
+    task.spawn(function()
+        for i = 1, needed do
+            pcall(function()
+                Network.Invoke("Consume Item", potionUid)
+                Network.Invoke("Potions: Consume", potionUid, 1)
+                Network.Fire("Consume Item", potionUid)
+                pcall(function() Network.Invoke("Items: Consume", potionUid, 1) end)
+            end)
+            task.wait(0.4)
+        end
+        
+        task.wait(2)
+        vm:Set("IsDrinking_" .. goalId, false)
+        vm:Set("IsProcessingPotion_" .. goalId, false)
+        print("[QUEST] Đã uống xong " .. needed .. " Potion Tier " .. requiredTier)
+    end)
 end
 
--- ==================== VÒNG LẶP QUEST BRAIN (ĐÃ SỬA) ====================
+-- ==================== VÒNG LẶP QUEST BRAIN (FIX LỖI 2-3 NHIỆM VỤ) ====================
 task.spawn(function()
     while task.wait(1) do
         if _G.PreparingToHop then break end
-        local data = Save.Get()
         
-        if data and data.Goals then
-            local index = 1
-            local needToFarm = false
+        -- Bọc PCALL toàn bộ khối xử lý dữ liệu để chống Crash khi Game gửi dữ liệu rác
+        pcall(function()
+            local data = Save.Get()
             
-            for goalId, goalData in pairs(data.Goals) do
-                if index > 4 then break end
+            if data and data.Goals then
+                local index = 1
+                local needToFarm = false
                 
-                local typeId = goalData.Type
-                local currentAmt = goalData.Progress or 0
-                local targetAmt = goalData.Amount or 1
-                local requiredTier = goalData.PotionTier or goalData.Tier or 1
-                
-                local goalName = GoalDictionary[typeId] or "Unknown Quest " .. typeId
-                if typeId == 7 then goalName = string.format("Earn %s", tostring(goalData.CurrencyID or "Coins")) end
-                if typeId == 34 then goalName = string.format("Use Tier %s Potions", ToRoman(requiredTier)) end
-                
-                -- ==================== XỬ LÝ QUEST 38 & 34 MỚI ====================
-                if currentAmt < targetAmt then
-                    if typeId == 21 or typeId == 38 or typeId == 14 or typeId == 15 then 
-                        needToFarm = true 
+                for goalId, goalData in pairs(data.Goals) do
+                    if index > 4 then break end
+                    
+                    -- KIỂM TRA AN TOÀN DỮ LIỆU: Bỏ qua nếu dữ liệu nhiệm vụ bị khuyết
+                    if type(goalData) ~= "table" then continue end
+                    local typeId = goalData.Type
+                    if not typeId then continue end 
+                    
+                    local currentAmt = goalData.Progress or 0
+                    local targetAmt = goalData.Amount or 1
+                    local requiredTier = goalData.PotionTier or goalData.Tier or 1
+                    
+                    local goalName = GoalDictionary[typeId] or "Unknown Quest " .. typeId
+                    if typeId == 7 then goalName = string.format("Earn %s", tostring(goalData.CurrencyID or "Coins")) end
+                    if typeId == 34 then goalName = string.format("Use Tier %s Potions", ToRoman(requiredTier)) end
+                    
+                    if currentAmt < targetAmt then
+                        if typeId == 21 or typeId == 38 or typeId == 14 or typeId == 15 then 
+                            needToFarm = true 
+                        end
+                        
+                        local needed = targetAmt - currentAmt
+                        
+                        if typeId == 38 then
+                            AutoConsumeComet(goalId, needed)
+                        elseif typeId == 34 then
+                            AutoConsumePotion(goalId, requiredTier, needed)
+                        end
                     end
                     
-                    local needed = targetAmt - currentAmt
+                    -- UI Update
+                    local percent = math.floor((currentAmt / targetAmt) * 100)
+                    if percent > 100 then percent = 100 end
                     
-                    if typeId == 38 then
-                        AutoConsumeComet(goalId, needed)
-                    elseif typeId == 34 then
-                        AutoConsumePotion(goalId, requiredTier, needed)
+                    local textStr = string.format("📌 [%s] : %s / %s (%d%%)", goalName, FormatValue(currentAmt), FormatValue(targetAmt), percent)
+                    if currentAmt >= targetAmt then
+                        QuestLabels[index].TextColor3 = Color3.fromRGB(50, 255, 50)
+                        textStr = "✅ " .. goalName .. " - COMPLETED!"
+                    else
+                        QuestLabels[index].TextColor3 = Color3.fromRGB(200, 200, 255)
                     end
-                end
-                -- =================================================================
-                
-                -- UI Update
-                local percent = math.floor((currentAmt / targetAmt) * 100)
-                if percent > 100 then percent = 100 end
-                
-                local textStr = string.format("📌 [%s] : %s / %s (%d%%)", goalName, FormatValue(currentAmt), FormatValue(targetAmt), percent)
-                if currentAmt >= targetAmt then
-                    QuestLabels[index].TextColor3 = Color3.fromRGB(50, 255, 50)
-                    textStr = "✅ " .. goalName .. " - COMPLETED!"
-                else
-                    QuestLabels[index].TextColor3 = Color3.fromRGB(200, 200, 255)
+                    
+                    if QuestLabels[index] then
+                        QuestLabels[index].Text = textStr
+                    end
+                    index = index + 1
                 end
                 
-                QuestLabels[index].Text = textStr
-                index = index + 1
+                vm:Set("NeedToFarmBreakables", needToFarm)
+                
+                -- LÀM SẠCH UI GỌN GÀNG KHI CHỈ CÓ 2-3 NHIỆM VỤ
+                for i = index, 4 do 
+                    if QuestLabels[i] then QuestLabels[i].Text = "" end 
+                end
+            else
+                if QuestLabels[1] then QuestLabels[1].Text = "Waiting for Quest Data..." end
+                for i = 2, 4 do 
+                    if QuestLabels[i] then QuestLabels[i].Text = "" end 
+                end
             end
-            
-            vm:Set("NeedToFarmBreakables", needToFarm)
-            for i = index, 4 do QuestLabels[i].Text = "" end
-        else
-            QuestLabels[1].Text = "Waiting for Quest Data..."
-        end
+        end)
     end
 end)
