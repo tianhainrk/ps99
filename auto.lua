@@ -191,13 +191,19 @@ local currentZone = ""
 local centerPoint = nil
 local lastPosUpdate = os.clock()
 
-local function GetZonePath(zoneNumber)
-    local searchPattern = "^" .. tostring(zoneNumber) .. " |"
+-- [ĐÃ SỬA]: Thêm tham số zoneName và kiểm tra IsA("Folder")/IsA("Model") để chống kẹt ở rương
+local function GetZonePath(zoneNumber, zoneName)
+    local searchPattern = "^" .. tostring(zoneNumber) .. " | " .. tostring(zoneName)
     for _, folderName in ipairs({"Map", "Map2", "Map3", "Map4", "Map5", "Map6"}) do
         local mapFolder = Workspace:FindFirstChild(folderName)
         if mapFolder then
             for _, zoneFolder in pairs(mapFolder:GetChildren()) do
-                if string.find(zoneFolder.Name, searchPattern) then return zoneFolder end
+                if string.find(zoneFolder.Name, searchPattern) then 
+                    -- Thêm lớp bảo vệ: Chỉ nhận Thư mục hoặc Model (Khu vực chính), bỏ qua các Part lẻ (Rương)
+                    if zoneFolder:IsA("Folder") or zoneFolder:IsA("Model") then
+                        return zoneFolder 
+                    end
+                end
             end
         end
     end
@@ -233,7 +239,8 @@ local function teleportToMaxZone(zoneName, maxZoneData)
         vm:Set("current_zone", currentZone)
         StatusLabel.Text = "Status: Teleporting to " .. zoneName
         
-        local zonePath = GetZonePath(maxZoneData.ZoneNumber)
+        -- [ĐÃ SỬA]: Cập nhật truyền thêm tham số zoneName vào đây
+        local zonePath = GetZonePath(maxZoneData.ZoneNumber, zoneName)
         if zonePath then
             if zonePath:FindFirstChild("PERSISTENT") and zonePath.PERSISTENT:FindFirstChild("Teleport") then
                 LocalPlayer.Character:PivotTo(zonePath.PERSISTENT.Teleport.CFrame + Vector3.new(0, 5, 0))
@@ -298,7 +305,8 @@ task.spawn(function()
             local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
             if hrp then
                 if not centerPoint or (currentZone ~= zoneName) then
-                    local zonePath = GetZonePath(maxZoneData.ZoneNumber)
+                    -- [ĐÃ SỬA]: Cập nhật truyền thêm tham số zoneName vào đây
+                    local zonePath = GetZonePath(maxZoneData.ZoneNumber, zoneName)
                     if zonePath and zonePath:FindFirstChild("INTERACT") then
                         local bZones = zonePath.INTERACT:FindFirstChild("BREAK_ZONES")
                         if bZones and bZones:GetChildren()[1] then
@@ -323,7 +331,6 @@ task.spawn(function()
         end)
     end
 end)
-
 --====================================================================--
 --//      PHẦN 3: NÃO ĐIỀU KHIỂN PET (CODEX STABLE FAST FARM)       //--
 --====================================================================--
