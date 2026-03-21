@@ -180,28 +180,30 @@ end
 --====================================================================--
 --//                 PHẦN 2: AUTO WORLD DYNAMICS                    //--
 --====================================================================--
-local function GetZonePath(zoneNumber, zoneName)
-    local expectedName = tostring(zoneNumber) .. " | " .. zoneName
+local function GetZonePath(zoneNumber)
+    -- Tìm kiếm mờ: Ép script chỉ tìm số thứ tự đầu tiên của map, kệ tên tiếng Anh
+    local searchPattern = "^" .. tostring(zoneNumber) .. " |"
     for _, folderName in ipairs({"Map", "Map2", "Map3", "Map4", "Map5", "Map6"}) do
         local mapFolder = Workspace:FindFirstChild(folderName)
         if mapFolder then
-            local zoneFolder = mapFolder:FindFirstChild(expectedName)
-            if zoneFolder then return zoneFolder end
+            for _, zoneFolder in pairs(mapFolder:GetChildren()) do
+                if string.find(zoneFolder.Name, searchPattern) then return zoneFolder end
+            end
         end
     end
     return nil
 end
 
--- Bản đồ Máy chủ cập nhật chính xác
-local function GetTargetPlaceId(zoneNumber)
-    if zoneNumber <= 99 then
-        return 8737899170
-    elseif zoneNumber <= 199 then
-        return 16498369169
-    elseif zoneNumber <= 239 then
-        return 17503543197
+-- Bộ lọc World dựa trên Rebirths (Chuẩn xác 100%)
+local function GetTargetPlaceInfo(rebirths)
+    if rebirths >= 9 then
+        return "Kawaii", 140403681187145
+    elseif rebirths >= 8 then
+        return "Void", 17503543197
+    elseif rebirths >= 4 then
+        return "Tech", 16498369169
     else
-        return 140403681187145
+        return "Spawn", 8737899170
     end
 end
 
@@ -211,12 +213,19 @@ local function teleportToMaxZone()
     local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
     if not zoneName or not maxZoneData then return end
     
+    local save = Save.Get()
+    local currentRebirths = save and save.Rebirths or 0
+    
+    local targetWorldName, targetPlaceId = GetTargetPlaceInfo(currentRebirths)
+    
     -- XỬ LÝ NHẢY WORLD (CROSS-SERVER TELEPORT)
-    local targetPlaceId = GetTargetPlaceId(maxZoneData.ZoneNumber)
     if game.PlaceId ~= targetPlaceId then
-        StatusLabel.Text = "Status: Switching World..."
+        StatusLabel.Text = "Status: Switching to " .. targetWorldName .. "..."
         pcall(function() Network.Invoke("Save") end) -- Lưu game cho chắc
-        TeleportService:Teleport(targetPlaceId, LocalPlayer)
+        task.wait(1)
+        
+        -- Dùng lệnh nhảy nội bộ của game để qua mặt Anti-Cheat
+        pcall(function() Network.Invoke("Teleports_RequestTeleport", targetWorldName) end)
         task.wait(15) -- Dừng script chờ chuyển server
         return
     end
@@ -227,7 +236,7 @@ local function teleportToMaxZone()
         vm:Set("current_zone", currentZone)
         StatusLabel.Text = "Status: Teleporting to " .. zoneName
         
-        local zonePath = GetZonePath(maxZoneData.ZoneNumber, zoneName)
+        local zonePath = GetZonePath(maxZoneData.ZoneNumber)
         if zonePath then
             if zonePath:FindFirstChild("PERSISTENT") and zonePath.PERSISTENT:FindFirstChild("Teleport") then
                 LocalPlayer.Character:PivotTo(zonePath.PERSISTENT.Teleport.CFrame + Vector3.new(0, 5, 0))
@@ -255,11 +264,11 @@ local function teleportToMaxZone()
 end
 
 task.spawn(function()
-    local nextRebirthData = nil
-    pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
-
     while task.wait(1) do
         pcall(function()
+            local nextRebirthData = nil
+            pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
+
             if nextRebirthData then
                 local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
                 if maxZoneData and maxZoneData.ZoneNumber >= nextRebirthData.ZoneNumberRequired then
@@ -267,10 +276,10 @@ task.spawn(function()
                     Network.Invoke("Rebirth_Request", tostring(nextRebirthData.RebirthNumber))
                     task.wait(10)
                     currentZone = ""; vm:Set("current_zone", nil)
-                    pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
                     return
                 end
             end
+            
             local nextZoneName, nextZoneData = ZoneCmds.GetNextZone()
             if nextZoneName then
                 local success = Network.Invoke("Zones_RequestPurchase", nextZoneName)
@@ -280,7 +289,6 @@ task.spawn(function()
         end)
     end
 end)
-
 --====================================================================--
 --//                   PHẦN 3: NÃO ĐIỀU KHIỂN PET                   //--
 --====================================================================--
