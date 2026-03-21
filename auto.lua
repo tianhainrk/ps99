@@ -183,182 +183,106 @@ end
 --====================================================================--
 --//        PHẦN 2: AUTO WORLD & PURE SERVER HOP (V15 - CHUẨN LOGIC)  //--
 --====================================================================--
-local function GetZonePath(zoneNumber)
-    local searchPattern = "^" .. tostring(zoneNumber) .. " |"
-    for _, folderName in ipairs({"Map", "Map2", "Map3", "Map4", "Map5", "Map6"}) do
-        local mapFolder = Workspace:FindFirstChild(folderName)
-        if mapFolder then
-            for _, zoneFolder in pairs(mapFolder:GetChildren()) do
-                if string.find(zoneFolder.Name, searchPattern) then return zoneFolder end
+--====================================================================--
+--//        CẬP NHẬT: TỰ TÌM CỔNG NGOÀI ZONE & NEO VỊ TRÍ           //--
+--====================================================================--
+
+local function GoToWorldPortal()
+    -- Vì cổng nằm ngoài Zone, ta tìm trong Workspace.__THINGS hoặc Map chung
+    local portalPath = nil
+    pcall(function()
+        -- Tìm các object có tên liên quan đến Portal hoặc Travel
+        for _, v in pairs(Workspace:GetChildren()) do
+            if string.find(v.Name, "Portal") or string.find(v.Name, "Travel") then
+                portalPath = v
+                break
             end
         end
-    end
-    return nil
-end
+    end)
 
-local currentZone = ""
-
--- GIỮ NGUYÊN 100% CODE SERVER HOP CỦA BẠN
-local function ExecutePureServerHop(placeId)
-    local AllIDs = {}
-    local foundAnything = ""
-    local actualHour = os.date("!*t").hour
-
-    local File = pcall(function() AllIDs = HttpService:JSONDecode(readfile("server-hop-temp.json")) end)
-    if not File then
-        table.insert(AllIDs, actualHour)
-        pcall(function() writefile("server-hop-temp.json", HttpService:JSONEncode(AllIDs)) end)
-    end
-
-    local function TPReturner(pId)
-        local url = 'https://games.roblox.com/v1/games/' .. pId .. '/servers/Public?sortOrder=Asc&limit=100'
-        if foundAnything ~= "" then url = url .. '&cursor=' .. foundAnything end
-        
-        local Site = nil
-        pcall(function() Site = HttpService:JSONDecode(game:HttpGet(url)) end)
-        if not Site then return end
-
-        local ID = ""
-        if Site.nextPageCursor and Site.nextPageCursor ~= "null" then
-            foundAnything = Site.nextPageCursor
-        end
-        
-        local num = 0;
-        for i,v in pairs(Site.data) do
-            local Possible = true
-            ID = tostring(v.id)
-            if tonumber(v.maxPlayers) > tonumber(v.playing) then
-                for _,Existing in pairs(AllIDs) do
-                    if num ~= 0 then
-                        if ID == tostring(Existing) then Possible = false end
-                    else
-                        if tonumber(actualHour) ~= tonumber(Existing) then
-                            pcall(function()
-                                delfile("server-hop-temp.json")
-                                AllIDs = {}
-                                table.insert(AllIDs, actualHour)
-                            end)
-                        end
-                    end
-                    num = num + 1
-                end
-                if Possible == true then
-                    table.insert(AllIDs, ID)
-                    task.wait()
-                    pcall(function()
-                        writefile("server-hop-temp.json", HttpService:JSONEncode(AllIDs))
-                        task.wait()
-                        TeleportService:TeleportToPlaceInstance(pId, ID, LocalPlayer)
-                    end)
-                    task.wait(4)
-                end
-            end
-        end
-    end
-
-    while task.wait() do
-        pcall(function()
-            TPReturner(placeId)
-            if foundAnything ~= "" then TPReturner(placeId) end
-        end)
+    if portalPath then
+        StatusLabel.Text = "Status: Moving to Portal..."
+        LocalPlayer.Character:PivotTo(portalPath.WorldPivot + Vector3.new(0, 5, 0))
+        task.wait(1)
+        -- Gửi lệnh xác nhận "Yes" như trong ảnh bạn gửi
+        -- Lưu ý: Bạn có thể cần kiểm tra tên Remote chính xác của game
+        pcall(function() Network.Invoke("Travel_ToNextWorld") end) 
+    else
+        StatusLabel.Text = "Status: Portal not found, checking UI..."
     end
 end
 
-local function CheckAndHopWorld(maxZoneNum)
-    local targetPlaceId = game.PlaceId
-    local targetWorldName = ""
-    
-    if maxZoneNum >= 239 then targetPlaceId = 140403681187145; targetWorldName = "Kawaii"
-    elseif maxZoneNum >= 199 then targetPlaceId = 17503543197; targetWorldName = "Void"
-    elseif maxZoneNum >= 99 then targetPlaceId = 16498369169; targetWorldName = "Tech"
-    end
-
-    if targetPlaceId ~= game.PlaceId then
-        _G.PreparingToHop = true
-        StatusLabel.Text = "Status: Stopping scripts for " .. targetWorldName .. "..."
-        pcall(function() Network.Invoke("Save") end)
-        
-        task.spawn(function()
-            for i = 15, 1, -1 do
-                StatusLabel.Text = "Status: Hopping in " .. i .. "s..."
-                task.wait(1)
-            end
-            StatusLabel.Text = "Status: Executing Server Hop..."
-            ExecutePureServerHop(targetPlaceId)
-        end)
-        return true
-    end
-    return false
-end
-
-local function teleportToMaxZone(zoneName, maxZoneData)
-    if _G.PreparingToHop then return end 
-    
-    if currentZone ~= zoneName then
-        currentZone = zoneName
-        vm:Set("current_zone", currentZone)
-        StatusLabel.Text = "Status: Teleporting to " .. zoneName
-        
-        local zonePath = GetZonePath(maxZoneData.ZoneNumber)
-        if zonePath then
-            if zonePath:FindFirstChild("PERSISTENT") and zonePath.PERSISTENT:FindFirstChild("Teleport") then
-                LocalPlayer.Character:PivotTo(zonePath.PERSISTENT.Teleport.CFrame + Vector3.new(0, 5, 0))
-                task.wait(0.5)
-            end
-            
-            local interact = zonePath:WaitForChild("INTERACT", 3)
-            if interact then
-                local breakZones = interact:WaitForChild("BREAK_ZONES", 3)
-                if breakZones then
-                    local dist = math.huge
-                    local closestZone = nil
-                    local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                    if hrp then
-                        for _, v in pairs(breakZones:GetChildren()) do
-                            local mag = (hrp.Position - v.Position).Magnitude
-                            if mag < dist then dist = mag; closestZone = v end
-                        end
-                        if closestZone then LocalPlayer.Character:PivotTo(closestZone.CFrame + Vector3.new(0, 10, 0)) end
-                    end
-                end
-            end
-        end
-    end
-end
+-- Biến kiểm tra vị trí để neo nhân vật
+local lastPosUpdate = os.clock()
+local centerPoint = nil
 
 task.spawn(function()
     while task.wait(1) do
         if _G.PreparingToHop then break end 
         
         pcall(function()
-            local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
+            local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone() [cite: 34]
             if not zoneName or not maxZoneData then return end
             
-            local isHopping = CheckAndHopWorld(maxZoneData.ZoneNumber)
-            if isHopping then return end 
-            
+            -- 1. KIỂM TRA ĐIỀU KIỆN QUA WORLD MỚI (Dựa trên số Zone cuối)
+            if (maxZoneData.ZoneNumber == 99 or maxZoneData.ZoneNumber == 199 or maxZoneData.ZoneNumber == 239) then
+                GoToWorldPortal()
+                task.wait(5)
+            end
+
+            -- 2. TÁI SINH (REBIRTH) VÀ ĐỢI 5 GIÂY
             local nextRebirthData = nil
-            pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
+            pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end) [cite: 35]
 
             if nextRebirthData and maxZoneData.ZoneNumber >= nextRebirthData.ZoneNumberRequired then
-                StatusLabel.Text = "Status: Rebirthing..."
-                Network.Invoke("Rebirth_Request", tostring(nextRebirthData.RebirthNumber))
-                task.wait(10)
-                currentZone = ""; vm:Set("current_zone", nil)
+                StatusLabel.Text = "Status: Rebirthing in 5s..."
+                task.wait(5) -- Đợi 5s đúng ý bạn [cite: 26]
+                Network.Invoke("Rebirth_Request", tostring(nextRebirthData.RebirthNumber)) [cite: 35]
+                
+                -- Ép nhân vật tìm lại map ngay lập tức
+                currentZone = "" [cite: 36]
+                vm:Set("current_zone", nil) [cite: 36]
+                centerPoint = nil -- Reset điểm neo
                 return
             end
             
-            local nextZoneName, nextZoneData = ZoneCmds.GetNextZone()
-            if nextZoneName then
-                local success = Network.Invoke("Zones_RequestPurchase", nextZoneName)
-                if success then StatusLabel.Text = "Status: Purchased " .. nextZoneName end
-            end
+            -- 3. MUA ZONE & TELEPORT
+            local nextZoneName = ZoneCmds.GetNextZone() [cite: 37]
+            if nextZoneName then Network.Invoke("Zones_RequestPurchase", nextZoneName) end [cite: 37]
             
-            teleportToMaxZone(zoneName, maxZoneData)
+            teleportToMaxZone(zoneName, maxZoneData) [cite: 27]
+
+            -- 4. LOGIC GIỮ NHÂN VẬT Ở GIỮA MAP (NEO 10 GIÂY)
+            local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart") [cite: 30]
+            if hrp then
+                -- Lấy điểm giữa của Zone hiện tại làm điểm neo
+                if not centerPoint or (currentZone ~= zoneName) then
+                    local zonePath = GetZonePath(maxZoneData.ZoneNumber) [cite: 11]
+                    if zonePath and zonePath:FindFirstChild("INTERACT") then
+                        local bZones = zonePath.INTERACT:FindFirstChild("BREAK_ZONES") [cite: 29]
+                        if bZones and bZones:GetChildren()[1] then
+                            centerPoint = bZones:GetChildren()[1].CFrame [cite: 32]
+                        end
+                    end
+                end
+
+                -- Kiểm tra nếu rời xa điểm neo quá 10 giây
+                if centerPoint then
+                    local dist = (hrp.Position - centerPoint.Position).Magnitude [cite: 31]
+                    if dist > 15 then -- Nếu lệch quá xa
+                        if os.clock() - lastPosUpdate > 10 then
+                            StatusLabel.Text = "Status: Returning to Center..."
+                            LocalPlayer.Character:PivotTo(centerPoint + Vector3.new(0, 10, 0)) [cite: 32]
+                            lastPosUpdate = os.clock()
+                        end
+                    else
+                        lastPosUpdate = os.clock() -- Reset thời gian nếu vẫn ở gần
+                    end
+                end
+            end
         end)
     end
 end)
-
 --====================================================================--
 --//      PHẦN 3: NÃO ĐIỀU KHIỂN PET (CODEX STABLE FAST FARM)       //--
 --====================================================================--
