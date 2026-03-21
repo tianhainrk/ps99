@@ -202,6 +202,9 @@ local function CheckAndHopWorld()
     local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
     if not maxZoneData then return end
 
+	-- ⛔ thêm delay đảm bảo data load
+    if tick() < 10 then return end
+
     local currentWorld = GetCurrentWorld()
     local maxZone = maxZoneData.ZoneNumber
     local requiredZone = WORLD_COMPLETION[currentWorld]
@@ -212,8 +215,9 @@ local function CheckAndHopWorld()
 
         if targetPlaceId and game.PlaceId ~= targetPlaceId then
             StatusLabel.Text = "Status: Moving to World " .. tostring(nextWorld)
-            ServerHop(targetPlaceId)
-            task.wait(15)
+             -- ⚠️ dùng task.spawn để không block
+            task.spawn(function()
+                ServerHop(targetPlaceId)
         end
     end
 end
@@ -356,10 +360,14 @@ local function teleportToMaxZone()
 end
 
 -- Vòng lặp Mua Map và Tái Sinh
+local lastWorldCheck = 0
 task.spawn(function()
     while task.wait(1) do
         pcall(function()
-	CheckAndHopWorld()
+	 if tick() - lastWorldCheck > 5 then
+                lastWorldCheck = tick()
+                CheckAndHopWorld()
+            end
             local nextRebirthData = nil
             pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
             
