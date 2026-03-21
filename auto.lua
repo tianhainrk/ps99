@@ -1,14 +1,20 @@
-if _G.AutoRankStarted then return end
-_G.AutoRankStarted = true
+--====================================================================--
+--//                   HASTY AUTO RANK (V6.2 FINAL)                 //--
+--====================================================================--
+
+-- 1. ĐỢI GAME TẢI XONG (Tránh lỗi luồng của Codex)
+repeat task.wait() until game:IsLoaded()
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+if LocalPlayer then
+    repeat task.wait() until LocalPlayer.PlayerGui and not LocalPlayer.PlayerGui:FindFirstChild("__INTRO")
+end
 
 local CoreGui = game:GetService("CoreGui")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
 local Workspace = game:GetService("Workspace")
-local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
-local LocalPlayer = Players.LocalPlayer
 
 local Library = ReplicatedStorage:WaitForChild("Library")
 local Save = require(Library.Client.Save)
@@ -19,10 +25,9 @@ local PetNetworking = require(Library.Client.PetNetworking)
 local RankCmds = require(Library.Client.RankCmds)
 local RanksDirectory = require(Library.Directory.Ranks)
 
--- FIX LỖI "THREAD CANNOT ACCESS INSTANCE" CỦA CODEX TẠI ĐÂY
+-- 2. KHỞI TẠO VARIABLES MANAGER (Chống lỗi Thread)
 local function loadUtils(url, file)
     local path = "Hasty-Utils/" .. file
-    -- Thay đổi cách gọi HttpGet để Codex không bị lỗi luồng
     local ok, res = pcall(function() return game:HttpGet(url) end) 
     if ok and res then
         if not isfolder("Hasty-Utils") then makefolder("Hasty-Utils") end
@@ -41,7 +46,8 @@ vm:Add("PetIDs", {}, "table")
 vm:Add("current_zone", nil, "string")
 vm:Add("NeedToFarmBreakables", false, "boolean")
 
-_G.PreparingToHop = false -- CÔNG TẮC NGẮT ĐIỆN TOÀN TẬP
+_G.PreparingToHop = false
+_G.AutoRankStarted = true
 
 -- Hack Tốc độ chạy & Anti-AFK
 pcall(function() require(Library.Client.PlayerPet).CalculateSpeedMultiplier = function(...) return 200 end end)
@@ -71,9 +77,7 @@ ToggleBtn.Text = "👁"
 ToggleBtn.TextSize = 25
 ToggleBtn.Font = Enum.Font.GothamBold
 ToggleBtn.Parent = ScreenGui
-local BtnCorner = Instance.new("UICorner")
-BtnCorner.CornerRadius = UDim.new(1, 0)
-BtnCorner.Parent = ToggleBtn
+Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(1, 0)
 
 local uiVisible = true
 ToggleBtn.MouseButton1Click:Connect(function()
@@ -118,9 +122,7 @@ local QuestsFrame = Instance.new("Frame")
 QuestsFrame.Size = UDim2.new(1, 0, 0, 200)
 QuestsFrame.BackgroundTransparency = 1
 QuestsFrame.Parent = Container
-local QuestsLayout = Instance.new("UIListLayout")
-QuestsLayout.Padding = UDim.new(0, 8)
-QuestsLayout.Parent = QuestsFrame
+Instance.new("UIListLayout", QuestsFrame).Padding = UDim.new(0, 8)
 
 local QuestLabels = {}
 for i = 1, 4 do
@@ -155,9 +157,11 @@ Network.Fired("Breakables_Cleanup"):Connect(function(data) for _, v in pairs(dat
 
 local function updateEuids()
     if type(PetNetworking.EquippedPets()) ~= "table" then return end
-    vm:TableClear("Euids"); vm:TableClear("PetIDs")
+    vm:TableClear("Euids")
+    vm:TableClear("PetIDs")
     for petID, petData in pairs(PetNetworking.EquippedPets()) do
-        vm:TableSet("Euids", petID, petData); vm:TableInsert("PetIDs", petID)
+        vm:TableSet("Euids", petID, petData)
+        vm:TableInsert("PetIDs", petID)
     end
 end
 updateEuids()
@@ -181,17 +185,28 @@ if OrbsFolder then
 end
 
 --====================================================================--
---//        PHẦN 2: AUTO WORLD & PURE SERVER HOP (V15 - CHUẨN LOGIC)  //--
+--//        PHẦN 2: AUTO WORLD, CỔNG PORTAL & REBIRTH NEO TÂM       //--
 --====================================================================--
---====================================================================--
---//        CẬP NHẬT: TỰ TÌM CỔNG NGOÀI ZONE & NEO VỊ TRÍ           //--
---====================================================================--
+local currentZone = ""
+local centerPoint = nil
+local lastPosUpdate = os.clock()
+
+local function GetZonePath(zoneNumber)
+    local searchPattern = "^" .. tostring(zoneNumber) .. " |"
+    for _, folderName in ipairs({"Map", "Map2", "Map3", "Map4", "Map5", "Map6"}) do
+        local mapFolder = Workspace:FindFirstChild(folderName)
+        if mapFolder then
+            for _, zoneFolder in pairs(mapFolder:GetChildren()) do
+                if string.find(zoneFolder.Name, searchPattern) then return zoneFolder end
+            end
+        end
+    end
+    return nil
+end
 
 local function GoToWorldPortal()
-    -- Vì cổng nằm ngoài Zone, ta tìm trong Workspace.__THINGS hoặc Map chung
     local portalPath = nil
     pcall(function()
-        -- Tìm các object có tên liên quan đến Portal hoặc Travel
         for _, v in pairs(Workspace:GetChildren()) do
             if string.find(v.Name, "Portal") or string.find(v.Name, "Travel") then
                 portalPath = v
@@ -204,92 +219,117 @@ local function GoToWorldPortal()
         StatusLabel.Text = "Status: Moving to Portal..."
         LocalPlayer.Character:PivotTo(portalPath.WorldPivot + Vector3.new(0, 5, 0))
         task.wait(1)
-        -- Gửi lệnh xác nhận "Yes" như trong ảnh bạn gửi
-        -- Lưu ý: Bạn có thể cần kiểm tra tên Remote chính xác của game
         pcall(function() Network.Invoke("Travel_ToNextWorld") end) 
     else
         StatusLabel.Text = "Status: Portal not found, checking UI..."
     end
 end
 
--- Biến kiểm tra vị trí để neo nhân vật
-local lastPosUpdate = os.clock()
-local centerPoint = nil
+local function teleportToMaxZone(zoneName, maxZoneData)
+    if _G.PreparingToHop then return end 
+    
+    if currentZone ~= zoneName then
+        currentZone = zoneName
+        vm:Set("current_zone", currentZone)
+        StatusLabel.Text = "Status: Teleporting to " .. zoneName
+        
+        local zonePath = GetZonePath(maxZoneData.ZoneNumber)
+        if zonePath then
+            if zonePath:FindFirstChild("PERSISTENT") and zonePath.PERSISTENT:FindFirstChild("Teleport") then
+                LocalPlayer.Character:PivotTo(zonePath.PERSISTENT.Teleport.CFrame + Vector3.new(0, 5, 0))
+                task.wait(0.5)
+            end
+            
+            local interact = zonePath:WaitForChild("INTERACT", 3)
+            if interact and interact:FindFirstChild("BREAK_ZONES") then
+                local breakZones = interact.BREAK_ZONES
+                local dist = math.huge
+                local closestZone = nil
+                local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    for _, v in pairs(breakZones:GetChildren()) do
+                        local mag = (hrp.Position - v.Position).Magnitude
+                        if mag < dist then dist = mag; closestZone = v end
+                    end
+                    if closestZone then 
+                        LocalPlayer.Character:PivotTo(closestZone.CFrame + Vector3.new(0, 10, 0)) 
+                    end
+                end
+            end
+        end
+    end
+end
 
 task.spawn(function()
     while task.wait(1) do
         if _G.PreparingToHop then break end 
         
         pcall(function()
-            local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone() [cite: 34]
+            local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
             if not zoneName or not maxZoneData then return end
             
-            -- 1. KIỂM TRA ĐIỀU KIỆN QUA WORLD MỚI (Dựa trên số Zone cuối)
+            -- 1. Vào Portal
             if (maxZoneData.ZoneNumber == 99 or maxZoneData.ZoneNumber == 199 or maxZoneData.ZoneNumber == 239) then
                 GoToWorldPortal()
                 task.wait(5)
             end
 
-            -- 2. TÁI SINH (REBIRTH) VÀ ĐỢI 5 GIÂY
+            -- 2. Rebirth
             local nextRebirthData = nil
-            pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end) [cite: 35]
+            pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
 
             if nextRebirthData and maxZoneData.ZoneNumber >= nextRebirthData.ZoneNumberRequired then
                 StatusLabel.Text = "Status: Rebirthing in 5s..."
-                task.wait(5) -- Đợi 5s đúng ý bạn [cite: 26]
-                Network.Invoke("Rebirth_Request", tostring(nextRebirthData.RebirthNumber)) [cite: 35]
-                
-                -- Ép nhân vật tìm lại map ngay lập tức
-                currentZone = "" [cite: 36]
-                vm:Set("current_zone", nil) [cite: 36]
-                centerPoint = nil -- Reset điểm neo
+                task.wait(5) 
+                Network.Invoke("Rebirth_Request", tostring(nextRebirthData.RebirthNumber))
+                currentZone = ""
+                vm:Set("current_zone", nil)
+                centerPoint = nil 
                 return
             end
             
-            -- 3. MUA ZONE & TELEPORT
-            local nextZoneName = ZoneCmds.GetNextZone() [cite: 37]
-            if nextZoneName then Network.Invoke("Zones_RequestPurchase", nextZoneName) end [cite: 37]
+            -- 3. Mua Zone & Teleport
+            local nextZoneName = ZoneCmds.GetNextZone()
+            if nextZoneName then Network.Invoke("Zones_RequestPurchase", nextZoneName) end
             
-            teleportToMaxZone(zoneName, maxZoneData) [cite: 27]
+            teleportToMaxZone(zoneName, maxZoneData)
 
-            -- 4. LOGIC GIỮ NHÂN VẬT Ở GIỮA MAP (NEO 10 GIÂY)
-            local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart") [cite: 30]
+            -- 4. Giữ vị trí trung tâm (Neo 10s)
+            local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
             if hrp then
-                -- Lấy điểm giữa của Zone hiện tại làm điểm neo
                 if not centerPoint or (currentZone ~= zoneName) then
-                    local zonePath = GetZonePath(maxZoneData.ZoneNumber) [cite: 11]
+                    local zonePath = GetZonePath(maxZoneData.ZoneNumber)
                     if zonePath and zonePath:FindFirstChild("INTERACT") then
-                        local bZones = zonePath.INTERACT:FindFirstChild("BREAK_ZONES") [cite: 29]
+                        local bZones = zonePath.INTERACT:FindFirstChild("BREAK_ZONES")
                         if bZones and bZones:GetChildren()[1] then
-                            centerPoint = bZones:GetChildren()[1].CFrame [cite: 32]
+                            centerPoint = bZones:GetChildren()[1].CFrame
                         end
                     end
                 end
 
-                -- Kiểm tra nếu rời xa điểm neo quá 10 giây
                 if centerPoint then
-                    local dist = (hrp.Position - centerPoint.Position).Magnitude [cite: 31]
-                    if dist > 15 then -- Nếu lệch quá xa
+                    local dist = (hrp.Position - centerPoint.Position).Magnitude
+                    if dist > 15 then 
                         if os.clock() - lastPosUpdate > 10 then
                             StatusLabel.Text = "Status: Returning to Center..."
-                            LocalPlayer.Character:PivotTo(centerPoint + Vector3.new(0, 10, 0)) [cite: 32]
+                            LocalPlayer.Character:PivotTo(centerPoint + Vector3.new(0, 10, 0))
                             lastPosUpdate = os.clock()
                         end
                     else
-                        lastPosUpdate = os.clock() -- Reset thời gian nếu vẫn ở gần
+                        lastPosUpdate = os.clock() 
                     end
                 end
             end
         end)
     end
 end)
+
 --====================================================================--
 --//      PHẦN 3: NÃO ĐIỀU KHIỂN PET (CODEX STABLE FAST FARM)       //--
 --====================================================================--
--- Pet tự động tìm mục tiêu (Mượt và an toàn)
 task.spawn(function()
     local breakableOffset = 0
-    while task.wait(0.2) do -- Delay 0.2s để Codex không bị sặc
+    while task.wait(0.2) do 
         if _G.PreparingToHop or not vm:Get("NeedToFarmBreakables") then continue end
         local zone = vm:Get("current_zone")
         if not zone then continue end
@@ -307,7 +347,6 @@ task.spawn(function()
                     bulkAssignments[petID] = assignedKey
                 end
             end
-
             if next(bulkAssignments) then
                 pcall(function() Network.Fire("Breakables_JoinPetBulk", bulkAssignments) end)
             end
@@ -318,7 +357,6 @@ task.spawn(function()
     end
 end)
 
--- AUTO TAP SIÊU TỐC (CÓ GIỚI HẠN CHỐNG CRASH)
 task.spawn(function()
     while task.wait(0.1) do
         if _G.PreparingToHop or not vm:Get("NeedToFarmBreakables") then continue end
@@ -331,7 +369,6 @@ task.spawn(function()
                 if info.pid == zone then
                     Network.UnreliableFire("Breakables_PlayerDealDamage", key)
                     count = count + 1
-                    -- GIỚI HẠN: Chỉ bắn 15 rương mỗi lần quét để Codex không văng lỗi
                     if count >= 15 then break end 
                 end
             end
@@ -340,17 +377,110 @@ task.spawn(function()
 end)
 
 --====================================================================--
---//        PHẦN 4: AUTO CLAIM & BỘ NÃO XỬ LÝ NHIỆM VỤ (V6.1)       //--
+--//        PHẦN 4: AUTO RANK REWARDS & MUA EGG SLOTS               //--
+--====================================================================--
+local lastRankTitle = "" 
+
+local function CheckAndBuyEggSlots()
+    pcall(function()
+        local PurchasedSlots = Save.Get()["EggSlotsPurchased"] or 0
+        local MaxSlots = RankCmds.GetMaxPurchasableEggSlots()
+        
+        if PurchasedSlots < MaxSlots then
+            StatusLabel.Text = "Status: Upgrading Egg Slots..."
+            while PurchasedSlots < MaxSlots do
+                local EggSlotInfo = RankCmds.GetEggBundle(PurchasedSlots + 1)
+                if Network.Invoke("EggHatchSlotsMachine_RequestPurchase", EggSlotInfo) then
+                    PurchasedSlots = PurchasedSlots + 1
+                    task.wait(0.5) 
+                else
+                    break 
+                end
+            end
+            StatusLabel.Text = "Status: Egg Slots Upgraded!"
+        end
+    end)
+end
+
+task.spawn(function()
+    pcall(function()
+        lastRankTitle = RankCmds.GetTitle()
+        CheckAndBuyEggSlots()
+    end)
+
+    while task.wait(5) do
+        if _G.PreparingToHop then break end
+        pcall(function()
+            local currentSave = Save.Get()
+            local currentTitle = RankCmds.GetTitle()
+            
+            -- Tự mua Slot khi Rank Up
+            if currentTitle ~= lastRankTitle then
+                lastRankTitle = currentTitle
+                CheckAndBuyEggSlots() 
+            end
+
+            -- Nhận thưởng
+            local totalStars = 0
+            if RanksDirectory[currentTitle] and RanksDirectory[currentTitle].Rewards then
+                for i, v in pairs(RanksDirectory[currentTitle].Rewards) do
+                    totalStars = totalStars + v.StarsRequired
+                    if currentSave.RankStars >= totalStars and not currentSave.RedeemedRankRewards[tostring(i)] then
+                        Network.Fire("Ranks_ClaimReward", i)
+                        task.wait(0.5)
+                    end
+                end
+            end
+        end)
+    end
+end)
+
+--====================================================================--
+--//           PHẦN 5: AUTO FRUIT THÔNG MINH (1 QUẢ/LẦN)            //--
+--====================================================================--
+local FruitList = {"Apple", "Orange", "Banana", "Pineapple", "Rainbow Fruit"}
+
+local function HasFruitBuff()
+    local save = Save.Get()
+    if save and save.Boosts then
+        for _, boost in pairs(save.Boosts) do
+            for _, fruitName in ipairs(FruitList) do
+                if string.find(boost.Id, fruitName) then return true end
+            end
+        end
+    end
+    return false
+end
+
+task.spawn(function()
+    while task.wait(5) do
+        if _G.PreparingToHop or HasFruitBuff() then continue end
+        
+        local data = Save.Get()
+        local fruitUid = nil
+        if data and data.Inventory and data.Inventory.Fruit then
+            for uid, _ in pairs(data.Inventory.Fruit) do
+                fruitUid = uid
+                break 
+            end
+        end
+        
+        if fruitUid then
+            pcall(function() 
+                Network.Invoke("Consume Item", fruitUid)
+                Network.Invoke("Fruits: Consume", fruitUid, 1) 
+            end)
+        end
+    end
+end)
+
+--====================================================================--
+--//           PHẦN 6: BỘ NÃO XỬ LÝ NHIỆM VỤ (QUEST BRAIN)          //--
 --====================================================================--
 local GoalDictionary = {
-    [7] = "Earn %s", 
-    [14] = "Collect Potions",
-    [15] = "Collect Enchants",
-    [21] = "Breakables in Best Area",
-    [34] = "Use Tier %s Potions",
-    [38] = "Break Comets in Best Area",
-    [40] = "Make Golden Pets",
-    [42] = "Hatch Legendary+ Pet"
+    [7] = "Earn %s", [14] = "Collect Potions", [15] = "Collect Enchants",
+    [21] = "Breakables in Best Area", [34] = "Use Tier %s Potions",
+    [38] = "Break Comets in Best Area", [40] = "Make Golden Pets", [42] = "Hatch Legendary+ Pet"
 }
 
 local function ToRoman(num)
@@ -367,26 +497,6 @@ local function FormatValue(Value)
     while absNumber >= 1000 and index < #suffixes do absNumber = absNumber / 1000; index = index + 1 end
     return (absNumber >= 1 and index > 1) and string.format("%.2f", absNumber):gsub("%.00$", "") .. suffixes[index] or tostring(math.floor(absNumber)) .. suffixes[index]
 end
-
-task.spawn(function()
-    while task.wait(5) do
-        if _G.PreparingToHop then break end
-        pcall(function()
-            local currentSave = Save.Get()
-            local totalStars = 0
-            local currentTitle = RankCmds.GetTitle()
-            if RanksDirectory[currentTitle] and RanksDirectory[currentTitle].Rewards then
-                for i, v in pairs(RanksDirectory[currentTitle].Rewards) do
-                    totalStars = totalStars + v.StarsRequired
-                    if currentSave.RankStars >= totalStars and not currentSave.RedeemedRankRewards[tostring(i)] then
-                        Network.Fire("Ranks_ClaimReward", i)
-                        task.wait(0.5)
-                    end
-                end
-            end
-        end)
-    end
-end)
 
 task.spawn(function()
     while task.wait(1) do
@@ -483,56 +593,6 @@ task.spawn(function()
             for i = index, 4 do QuestLabels[i].Text = "" end
         else
             QuestLabels[1].Text = "Waiting for Quest Data..."
-        end
-    end
-end)
---====================================================================--
---//          PHẦN 5: AUTO FRUIT THÔNG MINH (CHỈ 1 QUẢ/LẦN)         //--
---====================================================================--
-
-local FruitList = {"Apple", "Orange", "Banana", "Pineapple", "Rainbow Fruit"}
-
-local function GetActiveFruitBuffs()
-    local save = Save.Get()
-    if save and save.Boosts then
-        for _, boost in pairs(save.Boosts) do
-            -- Kiểm tra nếu tên boost trùng với bất kỳ loại trái cây nào
-            for _, fruitName in ipairs(FruitList) do
-                if string.find(boost.Id, fruitName) then
-                    return true -- Vẫn còn hiệu ứng trái cây
-                end
-            end
-        end
-    end
-    return false
-end
-
-task.spawn(function()
-    while task.wait(5) do -- Kiểm tra mỗi 5 giây
-        if _G.PreparingToHop then break end
-        
-        -- Chỉ ăn nếu KHÔNG còn hiệu ứng trái cây nào
-        if not GetActiveFruitBuffs() then
-            local data = Save.Get()
-            local fruitToEat = nil
-            
-            -- Tìm 1 quả trong kho đồ
-            if data and data.Inventory and data.Inventory.Fruit then
-                for uid, item in pairs(data.Inventory.Fruit) do
-                    fruitToEat = uid
-                    break -- Chỉ lấy đúng 1 UID đầu tiên tìm thấy
-                end
-            end
-            
-            if fruitToEat then
-                StatusLabel.Text = "Status: Eating 1 Fruit for Quest..."
-                pcall(function() 
-                    Network.Invoke("Consume Item", fruitToEat)
-                    -- Một số bản cập nhật game dùng lệnh dưới:
-                    Network.Invoke("Fruits: Consume", fruitToEat, 1) 
-                end)
-                task.wait(2) -- Đợi server cập nhật
-            end
         end
     end
 end)
