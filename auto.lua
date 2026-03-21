@@ -173,56 +173,8 @@ if OrbsFolder then
 end
 
 --====================================================================--
---//        PHẦN 2: AUTO WORLD & VŨ KHÍ SERVER HOP (V8.1)           //--
+--//        PHẦN 2: AUTO WORLD & VŨ KHÍ SERVER HOP ĐỘC LẬP          //--
 --====================================================================--
--- WORLD COMPLETION SYSTEM (NEW)
-local WORLD_COMPLETION = {
-    [1] = 99,
-    [2] = 199,
-    [3] = 239
-}
-
-local WORLD_PLACE_IDS = {
-    [1] = 8737899170,
-    [2] = 16498369169,
-    [3] = 17503543197,
-    [4] = 140403681187145
-}
-
-local function GetCurrentWorld()
-    for world, placeId in pairs(WORLD_PLACE_IDS) do
-        if game.PlaceId == placeId then
-            return world
-        end
-    end
-    return 1
-end
-
-local function CheckAndHopWorld()
-    local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
-    if not maxZoneData then return end
-
-	-- ⛔ thêm delay đảm bảo data load
-    if tick() < 10 then return end
-
-    local currentWorld = GetCurrentWorld()
-    local maxZone = maxZoneData.ZoneNumber
-    local requiredZone = WORLD_COMPLETION[currentWorld]
-
-    if requiredZone and maxZone >= requiredZone then
-        local nextWorld = currentWorld + 1
-        local targetPlaceId = WORLD_PLACE_IDS[nextWorld]
-
-        if targetPlaceId and game.PlaceId ~= targetPlaceId then
-            StatusLabel.Text = "Status: Moving to World " .. tostring(nextWorld)
-             -- ⚠️ dùng task.spawn để không block
-            task.spawn(function()
-                ServerHop(targetPlaceId)
-        end
-    end
-end
-
-
 local function GetZonePath(zoneNumber, zoneName)
     local expectedName = tostring(zoneNumber) .. " | " .. zoneName
     for _, folderName in ipairs({"Map", "Map2", "Map3", "Map4", "Map5", "Map6"}) do
@@ -235,16 +187,9 @@ local function GetZonePath(zoneNumber, zoneName)
     return nil
 end
 
-local function GetTargetPlaceId(zoneNumber)
-    if zoneNumber <= 99 then return 8737899170
-    elseif zoneNumber <= 199 then return 16498369169
-    elseif zoneNumber <= 239 then return 17503543197
-    else return 140403681187145 end
-end
-
 local currentZone = ""
 
--- THUẬT TOÁN SERVER HOP CỦA BẠN (Đã tinh chỉnh cho Đa Vũ Trụ)
+-- THUẬT TOÁN SERVER HOP
 local function ServerHop(targetPlaceId)
     StatusLabel.Text = "Status: Server Hopping to " .. tostring(targetPlaceId)
     pcall(function() Network.Invoke("Save") end)
@@ -257,14 +202,12 @@ local function ServerHop(targetPlaceId)
         local url = 'https://games.roblox.com/v1/games/' .. tostring(targetPlaceId) .. '/servers/Public?sortOrder=Asc&limit=100'
         local servers = nil
         
-        -- Thử lấy dữ liệu bằng HttpGet
         local success, res = pcall(function() return game:HttpGet(url) end)
         if success and res then
             local decoded = HttpService:JSONDecode(res)
             if decoded and decoded.data then servers = decoded.data end
         end
         
-        -- Nếu Executor không hỗ trợ HttpGet, dùng phương pháp Backup (Request)
         if not servers then
             pcall(function()
                 local req = (request or http and http.request or http_request or syn and syn.request)
@@ -282,7 +225,6 @@ local function ServerHop(targetPlaceId)
 
     local servers = getServers()
     if servers and #servers > 0 then
-        -- Lọc ra các server chưa đầy
         local validServers = {}
         for _, s in ipairs(servers) do
             if s.playing and s.maxPlayers and s.playing < s.maxPlayers - 1 then
@@ -291,7 +233,6 @@ local function ServerHop(targetPlaceId)
         end
         
         if #validServers > 0 then
-            -- Chọn ngẫu nhiên 1 server y như ý tưởng của bạn
             local randomServer = validServers[math.random(1, #validServers)]
             pcall(function()
                 TeleportService:TeleportToPlaceInstance(targetPlaceId, randomServer.id, LocalPlayer)
@@ -300,33 +241,29 @@ local function ServerHop(targetPlaceId)
         end
     end
     
-    -- Nếu thất bại toàn tập, xài Teleport thường của Roblox
     pcall(function() TeleportService:Teleport(targetPlaceId, LocalPlayer) end)
 end
 
+-- HỆ THỐNG DỊCH CHUYỂN & CHUYỂN WORLD ĐỘC LẬP
 local function teleportToMaxZone()
     local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
     if not zoneName or not maxZoneData then return end
     
-    local targetPlaceId = GetTargetPlaceId(maxZoneData.ZoneNumber)
+    local targetPlaceId = game.PlaceId
     
-    -- CẦU CHÌ KHÔNG GIAN
-    local nextRebirthData = nil
-    pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
-    if not nextRebirthData then
-        if maxZoneData.ZoneNumber == 99 then targetPlaceId = 16498369169 end
-        if maxZoneData.ZoneNumber == 199 then targetPlaceId = 17503543197 end
-        if maxZoneData.ZoneNumber == 239 then targetPlaceId = 140403681187145 end
-    end
+    -- CHỈ KIỂM TRA ĐÃ XONG TẤT CẢ ZONE CHƯA LÀ CHUYỂN WORLD LUÔN
+    if maxZoneData.ZoneNumber >= 99 and game.PlaceId == 8737899170 then targetPlaceId = 16498369169 end
+    if maxZoneData.ZoneNumber >= 199 and game.PlaceId == 16498369169 then targetPlaceId = 17503543197 end
+    if maxZoneData.ZoneNumber >= 239 and game.PlaceId == 17503543197 then targetPlaceId = 140403681187145 end
 
-    -- NẾU PHÁT HIỆN SAI MÁY CHỦ -> KÍCH HOẠT SERVER HOP CỦA BẠN
+    -- GỌI SERVER HOP NẾU KHÁC MÁY CHỦ
     if game.PlaceId ~= targetPlaceId then
         ServerHop(targetPlaceId)
-        task.wait(15) -- Nghỉ chờ bay
+        task.wait(15) -- Nghỉ 15s chờ bay
         return
     end
     
-    -- DỊCH CHUYỂN BÌNH THƯỜNG
+    -- DỊCH CHUYỂN BÌNH THƯỜNG TRONG CÙNG WORLD
     if currentZone ~= zoneName then
         currentZone = zoneName
         vm:Set("current_zone", currentZone)
@@ -359,39 +296,33 @@ local function teleportToMaxZone()
     end
 end
 
--- Vòng lặp Mua Map và Tái Sinh
-local lastWorldCheck = 0
+-- VÒNG LẶP MUA MAP VÀ REBIRTH (ĐÃ TÁCH RỜI)
 task.spawn(function()
     while task.wait(1) do
         pcall(function()
-	 if tick() - lastWorldCheck > 5 then
-                lastWorldCheck = tick()
-                CheckAndHopWorld()
-            end
+            -- 1. HỆ THỐNG REBIRTH ĐỘC LẬP (Chỉ cần đủ zone là tự Rebirth)
             local nextRebirthData = nil
             pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
             
             if nextRebirthData then
-    local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
-    if maxZoneData and maxZoneData.ZoneNumber >= nextRebirthData.ZoneNumberRequired then
-        StatusLabel.Text = "Status: Rebirthing..."
-
-        local oldRebirth = Save.Get().Rebirth or 0
-        Network.Invoke("Rebirth_Request", tostring(nextRebirthData.RebirthNumber))
-
-        repeat task.wait(1) until (Save.Get().Rebirth or 0) > oldRebirth
-
-        currentZone = ""
-        vm:Set("current_zone", nil)
-    end
-end
+                local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
+                if maxZoneData and maxZoneData.ZoneNumber >= nextRebirthData.ZoneNumberRequired then
+                    StatusLabel.Text = "Status: Rebirthing..."
+                    Network.Invoke("Rebirth_Request", tostring(nextRebirthData.RebirthNumber))
+                    task.wait(10)
+                    currentZone = ""; vm:Set("current_zone", nil)
+                    return
+                end
+            end
             
+            -- 2. HỆ THỐNG MUA MAP
             local nextZoneName, nextZoneData = ZoneCmds.GetNextZone()
             if nextZoneName then
                 local success = Network.Invoke("Zones_RequestPurchase", nextZoneName)
                 if success then StatusLabel.Text = "Status: Purchased " .. nextZoneName end
             end
             
+            -- 3. CHẠY KIỂM TRA DỊCH CHUYỂN
             teleportToMaxZone()
         end)
     end
