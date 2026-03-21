@@ -360,60 +360,110 @@ task.spawn(function()
 end)
 
 --====================================================================--
---//      PHẦN 3: NÃO ĐIỀU KHIỂN PET (CODEX STABLE FAST FARM)       //--
+--// PHẦN 3: NÃO ĐIỀU KHIỂN PET + TAP TẬP TRUNG (CÂN BẰNG HIỆU QUẢ) //--
 --====================================================================--
--- Pet tự động tìm mục tiêu (Mượt và an toàn)
+
+local MAX_TAP_TARGETS = 10       -- Giới hạn tap damage mỗi tick (điều chỉnh 6-15 tùy máy/server)
+local TAP_INTERVAL = 0.08         -- Delay giữa các lần tap (giảm spam remote)
+local DAMAGE_THRESHOLD_MULTIPLIER = 3  -- Ưu tiên khối có HP > trung bình x3 (tùy chỉnh)
+
 task.spawn(function()
     local breakableOffset = 0
-    while task.wait(0.2) do -- Delay 0.2s để Codex không bị sặc
+    local lastTapTime = 0
+
+    while true do
+        task.wait()  -- giữ tốc độ cao cho pet bulk
         if _G.PreparingToHop or not vm:Get("NeedToFarmBreakables") then continue end
-        local zone = vm:Get("current_zone")
-        if not zone then continue end
-
-        local availableBreakables = {}
-        for key, info in pairs(vm:Get("AllBreakables")) do
-            if info.pid == zone then table.insert(availableBreakables, key) end
-        end
-
-        if #availableBreakables > 0 then
-            local bulkAssignments = {}
-            for i, petID in ipairs(vm:Get("PetIDs")) do
-                if vm:Get("Euids")[petID] then
-                    local assignedKey = availableBreakables[((i - 1 + breakableOffset) % #availableBreakables) + 1]
-                    bulkAssignments[petID] = assignedKey
-                end
-            end
-
-            if next(bulkAssignments) then
-                pcall(function() Network.Fire("Breakables_JoinPetBulk", bulkAssignments) end)
-            end
-            breakableOffset = breakableOffset + 1
-        else
-            breakableOffset = 0
-        end
-    end
-end)
-
--- AUTO TAP SIÊU TỐC (CÓ GIỚI HẠN CHỐNG CRASH)
-task.spawn(function()
-    while task.wait(0.1) do
-        if _G.PreparingToHop or not vm:Get("NeedToFarmBreakables") then continue end
+        
         local zone = vm:Get("current_zone")
         if not zone then continue end
         
-        local count = 0
-        pcall(function()
-            for key, info in pairs(vm:Get("AllBreakables")) do
-                if info.pid == zone then
-                    Network.UnreliableFire("Breakables_PlayerDealDamage", key)
-                    count = count + 1
-                    -- GIỚI HẠN: Chỉ bắn 15 rương mỗi lần quét để Codex không văng lỗi
-                    if count >= 15 then break end 
+        local availableBreakables = {}
+        local totalHP = 0
+        local breakableCount = 0
+        
+        -- Thu thập + tính trung bình HP để ưu tiên
+        for key, info in pairs(vm:Get("AllBreakables")) do
+            if info.pid == zone then
+                local hp = info.h or 1  -- giả sử info có field HP (nếu không có thì bỏ phần này)
+                table.insert(availableBreakables, {key = key, hp = hp})
+                totalHP = totalHP + hp
+                breakableCount = breakableCount + 1
+            end
+        end
+        
+        if #availableBreakables == 0 then 
+            breakableOffset = 0
+            continue 
+        end
+        
+        local avgHP = totalHP / breakableCount
+        
+        -- Sắp xếp để ưu tiên khối to (HP cao)
+        table.sort(availableBreakables, function(a, b)
+            return a.hp > b.hp
+        end)
+        
+        local bulkAssignments = {}
+        local targetsToDamage = {}  -- chỉ tập trung vào nhóm nhỏ
+        
+        -- Phân bổ pet (vẫn round-robin toàn bộ)
+        for i, petID in ipairs(vm:Get("PetIDs")) do
+            if vm:Get("Euids")[petID] then
+                local pool = availableBreakables
+                local idx = ((i - 1 + breakableOffset) % #pool) + 1
+                local assigned = pool[idx]
+                bulkAssignments[petID] = assigned.key
+            end
+        end
+        
+        if next(bulkAssignments) then
+            task.spawn(function()
+                Network.Fire("Breakables_JoinPetBulk", bulkAssignments)
+            end)
+        end
+        
+        -- TAP DAMAGE: chỉ tập trung vào khối to nhất hoặc gần nhất
+        if os.clock() - lastTapTime >= TAP_INTERVAL then
+            lastTapTime = os.clock()
+            
+            local tapCount = 0
+            for _, entry in ipairs(availableBreakables) do
+                if tapCount >= MAX_TAP_TARGETS then break end
+                
+                -- Ưu tiên: HP cao hoặc gần nhân vật (nếu có vị trí)
+                local shouldTap = (entry.hp > avgHP * DAMAGE_THRESHOLD_MULTIPLIER)
+                
+                -- Nếu có vị trí nhân vật, có thể thêm điều kiện khoảng cách (nâng cao)
+                -- local dist = (hrp.Position - breakable.Position).Magnitude < 50
+                
+                if shouldTap then
+                    targetsToDamage[entry.key] = true
+                    tapCount = tapCount + 1
                 end
             end
-        end)
+            
+            -- Nếu không đủ khối to → tap random trong top
+            if tapCount < MAX_TAP_TARGETS / 2 then
+                for i = 1, math.min(MAX_TAP_TARGETS - tapCount, #availableBreakables) do
+                    local entry = availableBreakables[i]
+                    targetsToDamage[entry.key] = true
+                end
+            end
+            
+            task.spawn(function()
+                for targetKey in pairs(targetsToDamage) do
+                    Network.UnreliableFire("Breakables_PlayerDealDamage", targetKey)
+                end
+            end)
+        end
+        
+        breakableOffset = breakableOffset + 1
     end
 end)
+
+-- Bỏ hẳn phần "súng máy" spam toàn map cũ
+-- (hoặc giữ nhưng delay rất dài 3-5 giây nếu muốn)
 
 --====================================================================--
 --//        PHẦN 4: AUTO CLAIM & BỘ NÃO XỬ LÝ NHIỆM VỤ (V6.1)       //--
