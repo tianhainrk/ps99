@@ -377,7 +377,7 @@ task.spawn(function()
 end)
 
 --====================================================================--
---//        PHẦN 4: AUTO RANK REWARDS & MUA EGG SLOTS               //--
+--//        PHẦN 4: AUTO RANK REWARDS & MUA SLOTS (EGG + PET)       //--
 --====================================================================--
 local lastRankTitle = "" 
 
@@ -402,25 +402,56 @@ local function CheckAndBuyEggSlots()
     end)
 end
 
+local function CheckAndBuyPetSlots()
+    pcall(function()
+        -- Lưu ý: Các key như "PetEquipsPurchased" hoặc Remote "PetEquipsMachine_RequestPurchase" 
+        -- có thể cần điều chỉnh nhẹ nếu API của game có tên khác.
+        local PurchasedPetSlots = Save.Get()["PetEquipsPurchased"] or 0
+        local MaxPetSlots = RankCmds.GetMaxPurchasablePetEquips()
+        
+        if PurchasedPetSlots < MaxPetSlots then
+            StatusLabel.Text = "Status: Upgrading Pet Slots..."
+            while PurchasedPetSlots < MaxPetSlots do
+                local PetSlotInfo = RankCmds.GetPetEquipBundle(PurchasedPetSlots + 1)
+                
+                -- Thực hiện gửi lệnh mua slot Pet
+                if Network.Invoke("PetEquipsMachine_RequestPurchase", PetSlotInfo) then
+                    PurchasedPetSlots = PurchasedPetSlots + 1
+                    task.wait(0.5) 
+                else
+                    break 
+                end
+            end
+            StatusLabel.Text = "Status: Pet Slots Upgraded!"
+        end
+    end)
+end
+
 task.spawn(function()
     pcall(function()
         lastRankTitle = RankCmds.GetTitle()
+        -- Tự động kiểm tra và mua cả Egg & Pet Slots ở lần chạy đầu tiên
         CheckAndBuyEggSlots()
+        task.wait(1)
+        CheckAndBuyPetSlots()
     end)
 
     while task.wait(5) do
         if _G.PreparingToHop then break end
+        
         pcall(function()
             local currentSave = Save.Get()
             local currentTitle = RankCmds.GetTitle()
             
-            -- Tự mua Slot khi Rank Up
+            -- TỰ ĐỘNG MUA SLOTS KHI RANK UP
             if currentTitle ~= lastRankTitle then
                 lastRankTitle = currentTitle
                 CheckAndBuyEggSlots() 
+                task.wait(1) -- Nghỉ 1 nhịp để tránh spam server
+                CheckAndBuyPetSlots()
             end
 
-            -- Nhận thưởng
+            -- NHẬN THƯỞNG RANK
             local totalStars = 0
             if RanksDirectory[currentTitle] and RanksDirectory[currentTitle].Rewards then
                 for i, v in pairs(RanksDirectory[currentTitle].Rewards) do
@@ -434,7 +465,6 @@ task.spawn(function()
         end)
     end
 end)
-
 --====================================================================--
 --//           PHẦN 5: AUTO FRUIT THÔNG MINH (1 QUẢ/LẦN)            //--
 --====================================================================--
