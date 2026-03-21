@@ -178,10 +178,10 @@ if OrbsFolder then
 end
 
 --====================================================================--
---//                 PHẦN 2: AUTO WORLD DYNAMICS                    //--
+--//        PHẦN 2: AUTO WORLD & ADVANCED SERVER HOP (V12)          //--
 --====================================================================--
 local function GetZonePath(zoneNumber)
-    -- Tìm kiếm mờ: Ép script chỉ tìm số thứ tự đầu tiên của map, kệ tên tiếng Anh
+    -- Tìm kiếm mờ thông minh: Bỏ qua lỗi viết sai tên thư mục của game
     local searchPattern = "^" .. tostring(zoneNumber) .. " |"
     for _, folderName in ipairs({"Map", "Map2", "Map3", "Map4", "Map5", "Map6"}) do
         local mapFolder = Workspace:FindFirstChild(folderName)
@@ -194,49 +194,139 @@ local function GetZonePath(zoneNumber)
     return nil
 end
 
--- Bộ lọc World dựa trên Rebirths (Chuẩn xác 100%)
-local function GetTargetPlaceInfo(rebirths)
-    if rebirths >= 9 then
-        return "Kawaii", 140403681187145
-    elseif rebirths >= 8 then
-        return "Void", 17503543197
-    elseif rebirths >= 4 then
-        return "Tech", 16498369169
+local currentZone = ""
+
+-- HỆ THỐNG SERVER HOP TỐI THƯỢNG CỦA BẠN (ĐÃ TỐI ƯU HÓA)
+local function AdvancedServerHop(placeId)
+    local S_T = game:GetService("TeleportService")
+    local S_H = game:GetService("HttpService")
+    local AllIDs = {}
+    local foundAnything = ""
+    local actualHour = os.date("!*t").hour
+
+    local success, res = pcall(function() return S_H:JSONDecode(readfile("Hasty-ServerHop.json")) end)
+    if success and type(res) == "table" then
+        AllIDs = res
     else
-        return "Spawn", 8737899170
+        AllIDs = {actualHour}
+        pcall(function() writefile("Hasty-ServerHop.json", S_H:JSONEncode(AllIDs)) end)
+    end
+
+    local function TPReturner()
+        local url = 'https://games.roblox.com/v1/games/' .. tostring(placeId) .. '/servers/Public?sortOrder=Asc&limit=100'
+        if foundAnything ~= "" then url = url .. '&cursor=' .. foundAnything end
+
+        local Site = nil
+        pcall(function() Site = S_H:JSONDecode(game:HttpGet(url)) end)
+        if not Site then
+            pcall(function()
+                local req = (request or http and http.request or http_request or syn and syn.request)
+                if req then Site = S_H:JSONDecode(req({Url = url, Method = "GET"}).Body) end
+            end)
+        end
+
+        if not Site or not Site.data then return false end
+
+        if Site.nextPageCursor and Site.nextPageCursor ~= "null" then
+            foundAnything = Site.nextPageCursor
+        else
+            foundAnything = "" 
+        end
+
+        local num = 0
+        for i,v in pairs(Site.data) do
+            local Possible = true
+            local ID = tostring(v.id)
+            if tonumber(v.maxPlayers) > tonumber(v.playing) then
+                for _,Existing in pairs(AllIDs) do
+                    if num ~= 0 then
+                        if ID == tostring(Existing) then Possible = false end
+                    else
+                        if tonumber(actualHour) ~= tonumber(Existing) then
+                            pcall(function()
+                                if delfile then delfile("Hasty-ServerHop.json") end
+                                AllIDs = {actualHour}
+                            end)
+                        end
+                    end
+                    num = num + 1
+                end
+                
+                if Possible == true then
+                    table.insert(AllIDs, ID)
+                    pcall(function()
+                        writefile("Hasty-ServerHop.json", S_H:JSONEncode(AllIDs))
+                        S_T:TeleportToPlaceInstance(placeId, ID, LocalPlayer)
+                    end)
+                    task.wait(4)
+                    return true 
+                end
+            end
+        end
+        return false
+    end
+
+    while task.wait(0.1) do
+        local hopped = TPReturner()
+        if hopped then break end
+        if foundAnything == "" then
+            pcall(function() if delfile then delfile("Hasty-ServerHop.json") end end)
+            S_T:Teleport(placeId, LocalPlayer)
+            break 
+        end
     end
 end
 
-local currentZone = ""
+local lastHopAttempt = 0
 
 local function teleportToMaxZone()
     local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
     if not zoneName or not maxZoneData then return end
+    local maxZ = maxZoneData.ZoneNumber
     
-    local save = Save.Get()
-    local currentRebirths = save and save.Rebirths or 0
+    -- LOGIC CỦA BẠN: So sánh số Map hiện tại với Mốc Ranh Giới World
+    local targetWorldName = nil
+    local targetPlaceId = game.PlaceId
     
-    local targetWorldName, targetPlaceId = GetTargetPlaceInfo(currentRebirths)
-    
-    -- XỬ LÝ NHẢY WORLD (CROSS-SERVER TELEPORT)
-    if game.PlaceId ~= targetPlaceId then
-        StatusLabel.Text = "Status: Switching to " .. targetWorldName .. "..."
-        pcall(function() Network.Invoke("Save") end) -- Lưu game cho chắc
-        task.wait(1)
-        
-        -- Dùng lệnh nhảy nội bộ của game để qua mặt Anti-Cheat
-        pcall(function() Network.Invoke("Teleports_RequestTeleport", targetWorldName) end)
-        task.wait(15) -- Dừng script chờ chuyển server
-        return
+    if maxZ >= 239 then targetWorldName = "Kawaii"; targetPlaceId = 140403681187145
+    elseif maxZ >= 199 then targetWorldName = "Void"; targetPlaceId = 17503543197
+    elseif maxZ >= 99 then targetWorldName = "Tech"; targetPlaceId = 16498369169
     end
-    
-    -- DỊCH CHUYỂN BÌNH THƯỜNG TRONG CÙNG WORLD
+
+    -- Nếu sai Máy chủ -> Kích hoạt lệnh Nhảy
+    if targetWorldName and targetPlaceId ~= game.PlaceId then
+        local nextRebirthData = nil
+        pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
+        
+        -- CHỐT CHẶN: Nếu đến mốc nhảy nhưng vẫn NỢ Tái sinh -> Không nhảy, đứng chờ
+        if nextRebirthData and maxZ >= nextRebirthData.ZoneNumberRequired then
+            -- Bỏ qua không kích hoạt nhảy
+        else
+            -- Được phép nhảy!
+            if os.clock() - lastHopAttempt > 15 then
+                lastHopAttempt = os.clock()
+                StatusLabel.Text = "Status: Hopping to " .. targetWorldName .. "..."
+                pcall(function() Network.Invoke("Save") end)
+                
+                task.spawn(function()
+                    pcall(function() Network.Invoke("Teleports_RequestTeleport", targetWorldName) end)
+                    task.wait(4)
+                    AdvancedServerHop(targetPlaceId)
+                end)
+            end
+            return -- Dừng lệnh đi bộ để ưu tiên nhảy không gian
+        end
+    end
+
+    -- DỊCH CHUYỂN BÌNH THƯỜNG TRONG MAP (LUÔN CHẠY KHI ĐANG Ở ĐÚNG WORLD)
     if currentZone ~= zoneName then
         currentZone = zoneName
         vm:Set("current_zone", currentZone)
-        StatusLabel.Text = "Status: Teleporting to " .. zoneName
+        if string.find(StatusLabel.Text, "Hopping") == nil then
+            StatusLabel.Text = "Status: Teleporting to " .. zoneName
+        end
         
-        local zonePath = GetZonePath(maxZoneData.ZoneNumber)
+        local zonePath = GetZonePath(maxZ)
         if zonePath then
             if zonePath:FindFirstChild("PERSISTENT") and zonePath.PERSISTENT:FindFirstChild("Teleport") then
                 LocalPlayer.Character:PivotTo(zonePath.PERSISTENT.Teleport.CFrame + Vector3.new(0, 5, 0))
@@ -285,6 +375,7 @@ task.spawn(function()
                 local success = Network.Invoke("Zones_RequestPurchase", nextZoneName)
                 if success then StatusLabel.Text = "Status: Purchased " .. nextZoneName end
             end
+            
             teleportToMaxZone()
         end)
     end
