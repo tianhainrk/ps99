@@ -282,12 +282,15 @@ task.spawn(function()
 end)
 
 --====================================================================--
---//             PHẦN 3: NÃO ĐIỀU KHIỂN PET (SUPER FAST)            //--
+--//      PHẦN 3: NÃO ĐIỀU KHIỂN PET (SUPER FAST & CODEX FIX)       //--
 --====================================================================--
-task.spawn(function()
+local RunService = game:GetService("RunService")
+
+coroutine.wrap(function()
     local breakableOffset = 0
     while true do
-        task.wait() -- Chạy với tốc độ tối đa của máy tính
+        -- Dùng Heartbeat tốt hơn task.wait() trên Executor Mobile
+        RunService.Heartbeat:Wait() 
         if _G.PreparingToHop then continue end 
         
         if not vm:Get("NeedToFarmBreakables") then continue end
@@ -302,7 +305,7 @@ task.spawn(function()
 
         if #availableBreakables > 0 then
             local bulkAssignments = {}
-            local targetsToDamage = {} -- Danh sách các rương sẽ bị giáng sấm sét
+            local targetsToDamage = {}
 
             -- Chia pet ra mọi ngóc ngách
             for i, petID in ipairs(vm:Get("PetIDs")) do
@@ -310,30 +313,28 @@ task.spawn(function()
                     local pool = availableBreakables
                     local assignedKey = pool[((i - 1 + breakableOffset) % #pool) + 1]
                     bulkAssignments[petID] = assignedKey
-                    targetsToDamage[assignedKey] = true -- Đưa rương này vào danh sách tử hình
+                    targetsToDamage[assignedKey] = true
                 end
             end
 
             if next(bulkAssignments) then
-                task.spawn(function() Network.Fire("Breakables_JoinPetBulk", bulkAssignments) end)
+                -- Bỏ task.spawn, dùng trực tiếp pcall để tránh lỗi "thread cannot access instance" của Codex
+                pcall(function() Network.Fire("Breakables_JoinPetBulk", bulkAssignments) end)
                 
-                -- SÁT THƯƠNG DIỆN RỘNG (AOE): Đánh TẤT CẢ các rương mà pet đang nhắm tới CÙNG 1 LÚC!
-                task.spawn(function()
-                    for targetKey, _ in pairs(targetsToDamage) do
-                        Network.UnreliableFire("Breakables_PlayerDealDamage", targetKey)
-                    end
-                end)
+                -- SÁT THƯƠNG DIỆN RỘNG (AOE)
+                for targetKey, _ in pairs(targetsToDamage) do
+                    pcall(function() Network.UnreliableFire("Breakables_PlayerDealDamage", targetKey) end)
+                end
             end
             breakableOffset = breakableOffset + 1
         else
             breakableOffset = 0
         end
     end
-end)
+end)()
 
 -- VÒNG LẶP SÚNG MÁY (AUTO TAP CỰC ĐẠI)
--- Quét toàn bộ map và Tap nát mọi thứ mỗi 0.05 giây
-task.spawn(function()
+coroutine.wrap(function()
     while task.wait(0.05) do
         if _G.PreparingToHop or not vm:Get("NeedToFarmBreakables") then continue end
         local zone = vm:Get("current_zone")
@@ -343,13 +344,13 @@ task.spawn(function()
             local allBreaks = vm:Get("AllBreakables")
             for key, info in pairs(allBreaks) do
                 if info.pid == zone then
-                    -- Liên tục gửi sát thương Tap của người chơi vào mọi vật thể
-                    Network.UnreliableFire("Breakables_PlayerDealDamage", key)
+                    -- Bọc pcall từng lệnh một để Codex không bị ngộp
+                    pcall(function() Network.UnreliableFire("Breakables_PlayerDealDamage", key) end)
                 end
             end
         end)
     end
-end)
+end)()
 --====================================================================--
 --//        PHẦN 4: AUTO CLAIM & BỘ NÃO XỬ LÝ NHIỆM VỤ (V6.1)       //--
 --====================================================================--
