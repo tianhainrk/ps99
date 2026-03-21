@@ -7,6 +7,7 @@ local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
 local Workspace = game:GetService("Workspace")
 local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
 local LocalPlayer = Players.LocalPlayer
 
 local Library = ReplicatedStorage:WaitForChild("Library")
@@ -14,15 +15,15 @@ local Save = require(Library.Client.Save)
 local Network = require(Library.Client.Network)
 local ZoneCmds = require(Library.Client.ZoneCmds)
 local RebirthCmds = require(Library.Client.RebirthCmds)
-local MapCmds = require(Library.Client.MapCmds)
 local PetNetworking = require(Library.Client.PetNetworking)
 local RankCmds = require(Library.Client.RankCmds)
 local RanksDirectory = require(Library.Directory.Ranks)
 
--- Load thư viện theo dõi biến
+-- FIX LỖI "THREAD CANNOT ACCESS INSTANCE" CỦA CODEX TẠI ĐÂY
 local function loadUtils(url, file)
     local path = "Hasty-Utils/" .. file
-    local ok, res = pcall(game.HttpGet, game, url)
+    -- Thay đổi cách gọi HttpGet để Codex không bị lỗi luồng
+    local ok, res = pcall(function() return game:HttpGet(url) end) 
     if ok and res then
         if not isfolder("Hasty-Utils") then makefolder("Hasty-Utils") end
         writefile(path, res)
@@ -39,6 +40,8 @@ vm:Add("LastUseEuids", {}, "table")
 vm:Add("PetIDs", {}, "table")
 vm:Add("current_zone", nil, "string")
 vm:Add("NeedToFarmBreakables", false, "boolean")
+
+_G.PreparingToHop = false -- CÔNG TẮC NGẮT ĐIỆN TOÀN TẬP
 
 -- Hack Tốc độ chạy & Anti-AFK
 pcall(function() require(Library.Client.PlayerPet).CalculateSpeedMultiplier = function(...) return 200 end end)
@@ -178,56 +181,125 @@ if OrbsFolder then
 end
 
 --====================================================================--
---//                 PHẦN 2: AUTO WORLD DYNAMICS                    //--
+--//        PHẦN 2: AUTO WORLD & PURE SERVER HOP (V15 - CHUẨN LOGIC)  //--
 --====================================================================--
-local function GetZonePath(zoneNumber, zoneName)
-    local expectedName = tostring(zoneNumber) .. " | " .. zoneName
+local function GetZonePath(zoneNumber)
+    local searchPattern = "^" .. tostring(zoneNumber) .. " |"
     for _, folderName in ipairs({"Map", "Map2", "Map3", "Map4", "Map5", "Map6"}) do
         local mapFolder = Workspace:FindFirstChild(folderName)
         if mapFolder then
-            local zoneFolder = mapFolder:FindFirstChild(expectedName)
-            if zoneFolder then return zoneFolder end
+            for _, zoneFolder in pairs(mapFolder:GetChildren()) do
+                if string.find(zoneFolder.Name, searchPattern) then return zoneFolder end
+            end
         end
     end
     return nil
 end
 
--- Bản đồ Máy chủ cập nhật chính xác
-local function GetTargetPlaceId(zoneNumber)
-    if zoneNumber <= 99 then
-        return 8737899170
-    elseif zoneNumber <= 199 then
-        return 16498369169
-    elseif zoneNumber <= 239 then
-        return 17503543197
-    else
-        return 140403681187145
+local currentZone = ""
+
+-- GIỮ NGUYÊN 100% CODE SERVER HOP CỦA BẠN
+local function ExecutePureServerHop(placeId)
+    local AllIDs = {}
+    local foundAnything = ""
+    local actualHour = os.date("!*t").hour
+
+    local File = pcall(function() AllIDs = HttpService:JSONDecode(readfile("server-hop-temp.json")) end)
+    if not File then
+        table.insert(AllIDs, actualHour)
+        pcall(function() writefile("server-hop-temp.json", HttpService:JSONEncode(AllIDs)) end)
+    end
+
+    local function TPReturner(pId)
+        local url = 'https://games.roblox.com/v1/games/' .. pId .. '/servers/Public?sortOrder=Asc&limit=100'
+        if foundAnything ~= "" then url = url .. '&cursor=' .. foundAnything end
+        
+        local Site = nil
+        pcall(function() Site = HttpService:JSONDecode(game:HttpGet(url)) end)
+        if not Site then return end
+
+        local ID = ""
+        if Site.nextPageCursor and Site.nextPageCursor ~= "null" then
+            foundAnything = Site.nextPageCursor
+        end
+        
+        local num = 0;
+        for i,v in pairs(Site.data) do
+            local Possible = true
+            ID = tostring(v.id)
+            if tonumber(v.maxPlayers) > tonumber(v.playing) then
+                for _,Existing in pairs(AllIDs) do
+                    if num ~= 0 then
+                        if ID == tostring(Existing) then Possible = false end
+                    else
+                        if tonumber(actualHour) ~= tonumber(Existing) then
+                            pcall(function()
+                                delfile("server-hop-temp.json")
+                                AllIDs = {}
+                                table.insert(AllIDs, actualHour)
+                            end)
+                        end
+                    end
+                    num = num + 1
+                end
+                if Possible == true then
+                    table.insert(AllIDs, ID)
+                    task.wait()
+                    pcall(function()
+                        writefile("server-hop-temp.json", HttpService:JSONEncode(AllIDs))
+                        task.wait()
+                        TeleportService:TeleportToPlaceInstance(pId, ID, LocalPlayer)
+                    end)
+                    task.wait(4)
+                end
+            end
+        end
+    end
+
+    while task.wait() do
+        pcall(function()
+            TPReturner(placeId)
+            if foundAnything ~= "" then TPReturner(placeId) end
+        end)
     end
 end
 
-local currentZone = ""
-
-local function teleportToMaxZone()
-    local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
-    if not zoneName or not maxZoneData then return end
+local function CheckAndHopWorld(maxZoneNum)
+    local targetPlaceId = game.PlaceId
+    local targetWorldName = ""
     
-    -- XỬ LÝ NHẢY WORLD (CROSS-SERVER TELEPORT)
-    local targetPlaceId = GetTargetPlaceId(maxZoneData.ZoneNumber)
-    if game.PlaceId ~= targetPlaceId then
-        StatusLabel.Text = "Status: Switching World..."
-        pcall(function() Network.Invoke("Save") end) -- Lưu game cho chắc
-        TeleportService:Teleport(targetPlaceId, LocalPlayer)
-        task.wait(15) -- Dừng script chờ chuyển server
-        return
+    if maxZoneNum >= 239 then targetPlaceId = 140403681187145; targetWorldName = "Kawaii"
+    elseif maxZoneNum >= 199 then targetPlaceId = 17503543197; targetWorldName = "Void"
+    elseif maxZoneNum >= 99 then targetPlaceId = 16498369169; targetWorldName = "Tech"
     end
+
+    if targetPlaceId ~= game.PlaceId then
+        _G.PreparingToHop = true
+        StatusLabel.Text = "Status: Stopping scripts for " .. targetWorldName .. "..."
+        pcall(function() Network.Invoke("Save") end)
+        
+        task.spawn(function()
+            for i = 15, 1, -1 do
+                StatusLabel.Text = "Status: Hopping in " .. i .. "s..."
+                task.wait(1)
+            end
+            StatusLabel.Text = "Status: Executing Server Hop..."
+            ExecutePureServerHop(targetPlaceId)
+        end)
+        return true
+    end
+    return false
+end
+
+local function teleportToMaxZone(zoneName, maxZoneData)
+    if _G.PreparingToHop then return end 
     
-    -- DỊCH CHUYỂN BÌNH THƯỜNG TRONG CÙNG WORLD
     if currentZone ~= zoneName then
         currentZone = zoneName
         vm:Set("current_zone", currentZone)
         StatusLabel.Text = "Status: Teleporting to " .. zoneName
         
-        local zonePath = GetZonePath(maxZoneData.ZoneNumber, zoneName)
+        local zonePath = GetZonePath(maxZoneData.ZoneNumber)
         if zonePath then
             if zonePath:FindFirstChild("PERSISTENT") and zonePath.PERSISTENT:FindFirstChild("Teleport") then
                 LocalPlayer.Character:PivotTo(zonePath.PERSISTENT.Teleport.CFrame + Vector3.new(0, 5, 0))
@@ -255,46 +327,46 @@ local function teleportToMaxZone()
 end
 
 task.spawn(function()
-    local nextRebirthData = nil
-    pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
-
     while task.wait(1) do
+        if _G.PreparingToHop then break end 
+        
         pcall(function()
-            if nextRebirthData then
-                local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
-                if maxZoneData and maxZoneData.ZoneNumber >= nextRebirthData.ZoneNumberRequired then
-                    StatusLabel.Text = "Status: Rebirthing..."
-                    Network.Invoke("Rebirth_Request", tostring(nextRebirthData.RebirthNumber))
-                    task.wait(10)
-                    currentZone = ""; vm:Set("current_zone", nil)
-                    pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
-                    return
-                end
+            local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
+            if not zoneName or not maxZoneData then return end
+            
+            local isHopping = CheckAndHopWorld(maxZoneData.ZoneNumber)
+            if isHopping then return end 
+            
+            local nextRebirthData = nil
+            pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
+
+            if nextRebirthData and maxZoneData.ZoneNumber >= nextRebirthData.ZoneNumberRequired then
+                StatusLabel.Text = "Status: Rebirthing..."
+                Network.Invoke("Rebirth_Request", tostring(nextRebirthData.RebirthNumber))
+                task.wait(10)
+                currentZone = ""; vm:Set("current_zone", nil)
+                return
             end
+            
             local nextZoneName, nextZoneData = ZoneCmds.GetNextZone()
             if nextZoneName then
                 local success = Network.Invoke("Zones_RequestPurchase", nextZoneName)
                 if success then StatusLabel.Text = "Status: Purchased " .. nextZoneName end
             end
-            teleportToMaxZone()
+            
+            teleportToMaxZone(zoneName, maxZoneData)
         end)
     end
 end)
 
 --====================================================================--
---//      PHẦN 3: NÃO ĐIỀU KHIỂN PET (SUPER FAST & CODEX FIX)       //--
+--//      PHẦN 3: NÃO ĐIỀU KHIỂN PET (CODEX STABLE FAST FARM)       //--
 --====================================================================--
-local RunService = game:GetService("RunService")
-
-coroutine.wrap(function()
+-- Pet tự động tìm mục tiêu (Mượt và an toàn)
+task.spawn(function()
     local breakableOffset = 0
-    while true do
-        -- Dùng Heartbeat tốt hơn task.wait() trên Executor Mobile
-        RunService.Heartbeat:Wait() 
-        if _G.PreparingToHop then continue end 
-        
-        if not vm:Get("NeedToFarmBreakables") then continue end
-
+    while task.wait(0.2) do -- Delay 0.2s để Codex không bị sặc
+        if _G.PreparingToHop or not vm:Get("NeedToFarmBreakables") then continue end
         local zone = vm:Get("current_zone")
         if not zone then continue end
 
@@ -305,52 +377,44 @@ coroutine.wrap(function()
 
         if #availableBreakables > 0 then
             local bulkAssignments = {}
-            local targetsToDamage = {}
-
-            -- Chia pet ra mọi ngóc ngách
             for i, petID in ipairs(vm:Get("PetIDs")) do
                 if vm:Get("Euids")[petID] then
-                    local pool = availableBreakables
-                    local assignedKey = pool[((i - 1 + breakableOffset) % #pool) + 1]
+                    local assignedKey = availableBreakables[((i - 1 + breakableOffset) % #availableBreakables) + 1]
                     bulkAssignments[petID] = assignedKey
-                    targetsToDamage[assignedKey] = true
                 end
             end
 
             if next(bulkAssignments) then
-                -- Bỏ task.spawn, dùng trực tiếp pcall để tránh lỗi "thread cannot access instance" của Codex
                 pcall(function() Network.Fire("Breakables_JoinPetBulk", bulkAssignments) end)
-                
-                -- SÁT THƯƠNG DIỆN RỘNG (AOE)
-                for targetKey, _ in pairs(targetsToDamage) do
-                    pcall(function() Network.UnreliableFire("Breakables_PlayerDealDamage", targetKey) end)
-                end
             end
             breakableOffset = breakableOffset + 1
         else
             breakableOffset = 0
         end
     end
-end)()
+end)
 
--- VÒNG LẶP SÚNG MÁY (AUTO TAP CỰC ĐẠI)
-coroutine.wrap(function()
-    while task.wait(0.05) do
+-- AUTO TAP SIÊU TỐC (CÓ GIỚI HẠN CHỐNG CRASH)
+task.spawn(function()
+    while task.wait(0.1) do
         if _G.PreparingToHop or not vm:Get("NeedToFarmBreakables") then continue end
         local zone = vm:Get("current_zone")
         if not zone then continue end
         
+        local count = 0
         pcall(function()
-            local allBreaks = vm:Get("AllBreakables")
-            for key, info in pairs(allBreaks) do
+            for key, info in pairs(vm:Get("AllBreakables")) do
                 if info.pid == zone then
-                    -- Bọc pcall từng lệnh một để Codex không bị ngộp
-                    pcall(function() Network.UnreliableFire("Breakables_PlayerDealDamage", key) end)
+                    Network.UnreliableFire("Breakables_PlayerDealDamage", key)
+                    count = count + 1
+                    -- GIỚI HẠN: Chỉ bắn 15 rương mỗi lần quét để Codex không văng lỗi
+                    if count >= 15 then break end 
                 end
             end
         end)
     end
-end)()
+end)
+
 --====================================================================--
 --//        PHẦN 4: AUTO CLAIM & BỘ NÃO XỬ LÝ NHIỆM VỤ (V6.1)       //--
 --====================================================================--
@@ -365,7 +429,6 @@ local GoalDictionary = {
     [42] = "Hatch Legendary+ Pet"
 }
 
--- Hàm đổi số sang số La Mã (Hiển thị UI)
 local function ToRoman(num)
     local roman = {"I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"}
     return roman[tonumber(num)] or tostring(num)
@@ -377,22 +440,17 @@ local function FormatValue(Value)
     local suffixes = {"", "k", "m", "b", "t"}
     local index = 1
     local absNumber = math.abs(n)
-    while absNumber >= 1000 and index < #suffixes do
-        absNumber = absNumber / 1000
-        index = index + 1
-    end
-    local formatted = (absNumber >= 1 and index > 1) and string.format("%.2f", absNumber):gsub("%.00$", "") or tostring(math.floor(absNumber))
-    return formatted .. suffixes[index]
+    while absNumber >= 1000 and index < #suffixes do absNumber = absNumber / 1000; index = index + 1 end
+    return (absNumber >= 1 and index > 1) and string.format("%.2f", absNumber):gsub("%.00$", "") .. suffixes[index] or tostring(math.floor(absNumber)) .. suffixes[index]
 end
 
--- Vòng lặp Auto Claim
 task.spawn(function()
     while task.wait(5) do
+        if _G.PreparingToHop then break end
         pcall(function()
             local currentSave = Save.Get()
             local totalStars = 0
             local currentTitle = RankCmds.GetTitle()
-            
             if RanksDirectory[currentTitle] and RanksDirectory[currentTitle].Rewards then
                 for i, v in pairs(RanksDirectory[currentTitle].Rewards) do
                     totalStars = totalStars + v.StarsRequired
@@ -406,9 +464,9 @@ task.spawn(function()
     end
 end)
 
--- VÒNG LẶP CỦA BỘ NÃO (BRAIN LOOP)
 task.spawn(function()
     while task.wait(1) do
+        if _G.PreparingToHop then break end
         local data = Save.Get()
         
         if data and data.Goals then
@@ -421,107 +479,67 @@ task.spawn(function()
                 local typeId = goalData.Type
                 local currentAmt = goalData.Progress or 0
                 local targetAmt = goalData.Amount or 1
-                
-                -- Lấy chuẩn Tier từ API của game
                 local requiredTier = goalData.PotionTier or goalData.Tier or 1
                 
-                -- 1. DỊCH TÊN NHIỆM VỤ
                 local goalName = "Unknown Quest ID: " .. tostring(typeId)
-                if typeId == 7 then
-                    goalName = string.format("Earn %s", tostring(goalData.CurrencyID or "Coins"))
-                elseif typeId == 34 then
-                    goalName = string.format("Use Tier %s Potions", ToRoman(requiredTier))
-                elseif GoalDictionary[typeId] then
-                    goalName = GoalDictionary[typeId]
-                end
+                if typeId == 7 then goalName = string.format("Earn %s", tostring(goalData.CurrencyID or "Coins"))
+                elseif typeId == 34 then goalName = string.format("Use Tier %s Potions", ToRoman(requiredTier))
+                elseif GoalDictionary[typeId] then goalName = GoalDictionary[typeId] end
 
-                -- ==========================================
-                -- 2. BỘ NÃO XỬ LÝ (GIẢI QUYẾT NHIỆM VỤ)
-                -- ==========================================
                 if currentAmt < targetAmt then
+                    if typeId == 21 or typeId == 38 or typeId == 14 or typeId == 15 then needToFarm = true end
                     
-                    if typeId == 21 or typeId == 38 or typeId == 14 or typeId == 15 then
-                        needToFarm = true 
-                    end
-                    
-                    -- AUTO SỬ DỤNG COMET (Tìm kiếm toàn diện kho đồ)
                     if typeId == 38 then
                         local lastProgress = vm:Get("CometProg_" .. goalId) or -1
                         local lastTime = vm:Get("CometTime_" .. goalId) or 0
-                        
                         if currentAmt ~= lastProgress or (os.clock() - lastTime > 30) then
                             local cometUid = nil
-                            
-                            -- LỤC TUNG TOÀN BỘ KHO ĐỒ
                             if data.Inventory then
-                                for categoryName, categoryData in pairs(data.Inventory) do
+                                for _, categoryData in pairs(data.Inventory) do
                                     if type(categoryData) == "table" then
                                         for uid, item in pairs(categoryData) do
-                                            -- Chỉ cần ID có chứa chữ "comet" là lấy!
-                                            if type(item.id) == "string" and string.find(string.lower(item.id), "comet") then
-                                                cometUid = uid
-                                                break
-                                            end
+                                            if type(item.id) == "string" and string.find(string.lower(item.id), "comet") then cometUid = uid break end
                                         end
                                     end
                                     if cometUid then break end
                                 end
                             end
-                            
                             if cometUid then
                                 vm:Set("CometProg_" .. goalId, currentAmt)
                                 vm:Set("CometTime_" .. goalId, os.clock())
-                                
                                 task.spawn(function()
-                                    -- Gửi đa dạng lệnh
                                     pcall(function() Network.Invoke("Consume Item", cometUid) end)
                                     pcall(function() Network.Invoke("Items: Consume", cometUid, 1) end)
-                                    pcall(function() Network.Fire("Consume Item", cometUid) end)
                                 end)
                             end
                         end
                     end
 
-                    -- AUTO UỐNG POTION (Tìm kiếm theo tn - tier number)
                     if typeId == 34 then
                         local neededToDrink = targetAmt - currentAmt
-                        
                         if not vm:Get("IsDrinking_" .. goalId) then
                             vm:Set("IsDrinking_" .. goalId, true)
-                            
                             task.spawn(function()
                                 local targetUid = nil
-                                
-                                -- Lục trong thư mục Potion
                                 if data.Inventory and data.Inventory.Potion then
                                     for uid, item in pairs(data.Inventory.Potion) do
-                                        -- Cứ bình nào có tier (tn) trùng khớp là lấy
-                                        if item.tn == requiredTier then
-                                            targetUid = uid
-                                            break
-                                        end
+                                        if item.tn == requiredTier then targetUid = uid break end
                                     end
                                 end
-                                
                                 if targetUid then
                                     for i = 1, neededToDrink do
                                         pcall(function() Network.Invoke("Consume Item", targetUid) end)
                                         pcall(function() Network.Invoke("Potions: Consume", targetUid, 1) end)
-                                        pcall(function() Network.Fire("Consume Item", targetUid) end)
-                                        
-                                        task.wait(0.15) 
+                                        task.wait(0.2) 
                                     end
                                 end
-                                
                                 task.wait(3) 
                                 vm:Set("IsDrinking_" .. goalId, false)
                             end)
                         end
                     end
                 end
-                -- ==========================================
 
-                -- 3. CẬP NHẬT GIAO DIỆN (UI)
                 local percent = math.floor((currentAmt / targetAmt) * 100)
                 if percent > 100 then percent = 100 end
                 
@@ -538,7 +556,6 @@ task.spawn(function()
             end
             
             vm:Set("NeedToFarmBreakables", needToFarm)
-
             for i = index, 4 do QuestLabels[i].Text = "" end
         else
             QuestLabels[1].Text = "Waiting for Quest Data..."
