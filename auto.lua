@@ -486,3 +486,53 @@ task.spawn(function()
         end
     end
 end)
+--====================================================================--
+--//          PHẦN 5: AUTO FRUIT THÔNG MINH (CHỈ 1 QUẢ/LẦN)         //--
+--====================================================================--
+
+local FruitList = {"Apple", "Orange", "Banana", "Pineapple", "Rainbow Fruit"}
+
+local function GetActiveFruitBuffs()
+    local save = Save.Get()
+    if save and save.Boosts then
+        for _, boost in pairs(save.Boosts) do
+            -- Kiểm tra nếu tên boost trùng với bất kỳ loại trái cây nào
+            for _, fruitName in ipairs(FruitList) do
+                if string.find(boost.Id, fruitName) then
+                    return true -- Vẫn còn hiệu ứng trái cây
+                end
+            end
+        end
+    end
+    return false
+end
+
+task.spawn(function()
+    while task.wait(5) do -- Kiểm tra mỗi 5 giây
+        if _G.PreparingToHop then break end
+        
+        -- Chỉ ăn nếu KHÔNG còn hiệu ứng trái cây nào
+        if not GetActiveFruitBuffs() then
+            local data = Save.Get()
+            local fruitToEat = nil
+            
+            -- Tìm 1 quả trong kho đồ
+            if data and data.Inventory and data.Inventory.Fruit then
+                for uid, item in pairs(data.Inventory.Fruit) do
+                    fruitToEat = uid
+                    break -- Chỉ lấy đúng 1 UID đầu tiên tìm thấy
+                end
+            end
+            
+            if fruitToEat then
+                StatusLabel.Text = "Status: Eating 1 Fruit for Quest..."
+                pcall(function() 
+                    Network.Invoke("Consume Item", fruitToEat)
+                    -- Một số bản cập nhật game dùng lệnh dưới:
+                    Network.Invoke("Fruits: Consume", fruitToEat, 1) 
+                end)
+                task.wait(2) -- Đợi server cập nhật
+            end
+        end
+    end
+end)
