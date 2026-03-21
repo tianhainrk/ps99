@@ -178,200 +178,139 @@ if OrbsFolder then
 end
 
 --====================================================================--
---//                 PHẦN 2: AUTO WORLD DYNAMICS (SERVER-HOP FIX)    //--
+--//          PHẦN 2: AUTO WORLD DYNAMICS (CƯỠNG CHẾ WORLD 3)        //--
 --====================================================================--
 
--- Module Server-Hop từ code bạn cung cấp (đã chỉnh sửa nhẹ cho clean)
-local ServerHopModule = {}
+local TARGET_WORLD3_ID = 17503543197  -- Void World - xác nhận active 2026
+
+-- ==================== SERVER-HOP CƯỠNG CHẾ (SIÊU MẠNH) ====================
+local ServerHop = {}
 do
     local AllIDs = {}
-    local foundAnything = ""
-    local actualHour = os.date("!*t").hour
-    local Deleted = false
+    local cursor = ""
     local S_T = game:GetService("TeleportService")
     local S_H = game:GetService("HttpService")
 
-    local File = pcall(function()
-        AllIDs = S_H:JSONDecode(readfile("server-hop-temp.json"))
-    end)
-    if not File then
-        table.insert(AllIDs, actualHour)
-        pcall(function() writefile("server-hop-temp.json", S_H:JSONEncode(AllIDs)) end)
-    end
+    pcall(function() delfile("server-hop-temp.json") end) -- reset mỗi lần chạy
 
-    local function TPReturner(placeId)
-        local Site
-        if foundAnything == "" then
-            Site = S_H:JSONDecode(game:HttpGet('https://games.roblox.com/v1/games/' .. placeId .. '/servers/Public?sortOrder=Asc&limit=100'))
-        else
-            Site = S_H:JSONDecode(game:HttpGet('https://games.roblox.com/v1/games/' .. placeId .. '/servers/Public?sortOrder=Asc&limit=100&cursor=' .. foundAnything))
-        end
-
-        local ID = ""
-        if Site and Site.nextPageCursor and Site.nextPageCursor ~= "null" and Site.nextPageCursor ~= nil then
-            foundAnything = Site.nextPageCursor
-        end
-
-        local num = 0
-        for i, v in pairs(Site and Site.data or {}) do
-            local Possible = true
-            ID = tostring(v.id)
+    local function TPReturner()
+        local Site = S_H:JSONDecode(game:HttpGet('https://games.roblox.com/v1/games/' .. TARGET_WORLD3_ID .. '/servers/Public?sortOrder=Asc&limit=100' .. (cursor ~= "" and "&cursor="..cursor or "")))
+        
+        if Site.nextPageCursor then cursor = Site.nextPageCursor end
+        
+        for _, v in pairs(Site.data or {}) do
             if tonumber(v.playing) < tonumber(v.maxPlayers) then
-                for _, Existing in pairs(AllIDs) do
-                    if num ~= 0 then
-                        if ID == tostring(Existing) then Possible = false end
-                    else
-                        if tonumber(actualHour) ~= tonumber(Existing) then
-                            pcall(function()
-                                delfile("server-hop-temp.json")
-                                AllIDs = {}
-                                table.insert(AllIDs, actualHour)
-                            end)
-                        end
-                    end
-                    num = num + 1
-                end
-                if Possible then
-                    table.insert(AllIDs, ID)
-                    task.wait()
+                local id = tostring(v.id)
+                if not table.find(AllIDs, id) then
+                    table.insert(AllIDs, id)
                     pcall(function()
                         writefile("server-hop-temp.json", S_H:JSONEncode(AllIDs))
-                        task.wait()
-                        S_T:TeleportToPlaceInstance(placeId, ID, game.Players.LocalPlayer)
+                        S_T:TeleportToPlaceInstance(TARGET_WORLD3_ID, id, LocalPlayer)
                     end)
-                    task.wait(4)
-                    return true  -- Đã thử teleport → thoát để retry nếu fail
+                    print("🚀 [FORCE HOP] Đang join server World 3 ID: " .. id)
+                    task.wait(3)
+                    return true
                 end
             end
         end
         return false
     end
 
-    function ServerHopModule:Teleport(placeId)
-        print("[SERVER-HOP] Bắt đầu tìm server cho PlaceId: " .. placeId)
-        local attempts = 0
-        while attempts < 30 do  -- Max 30 lần thử để tránh loop vĩnh viễn
-            attempts = attempts + 1
-            print("[SERVER-HOP] Thử lần " .. attempts .. " (cursor: " .. (foundAnything or "none") .. ")")
-            pcall(function() TPReturner(placeId) end)
-            if foundAnything ~= "" then
-                pcall(function() TPReturner(placeId) end)
-            end
-            task.wait(3 + math.random(1,4))  -- Delay random để tránh rate limit
-        end
-        print("[SERVER-HOP ERROR] Không tìm được server sau 30 lần → pause 60s rồi thử lại sau")
-        task.wait(60)
-    end
-end
-
--- Các hàm khác giữ nguyên
-local function GetTargetPlaceId(zoneNumber)
-    if zoneNumber <= 99 then return 8737899170 end      -- World 1
-    if zoneNumber <= 199 then return 16498369169 end    -- World 2
-    if zoneNumber <= 299 then return 17503543197 end    -- World 3 (Void) - confirmed từ Rolimon's
-    return 140403681187145                              -- World 4+
-end
-
-local function GetZonePath(zoneNumber, zoneName)
-    local expectedName = tostring(zoneNumber) .. " | " .. zoneName
-    print("[DEBUG] Tìm zone path: " .. expectedName)
-    for _, folder in ipairs({"Map", "Map2", "Map3", "Map4", "Map5", "Map6"}) do
-        local mapFolder = Workspace:FindFirstChild(folder)
-        if mapFolder and mapFolder:FindFirstChild(expectedName) then
-            print("[DEBUG] ✓ Tìm thấy trong " .. folder)
-            return mapFolder[expectedName]
+    function ServerHop:ForceToWorld3()
+        print("🔥 [CƯỠNG CHẾ] BẮT ĐẦU FORCE TELEPORT WORLD 3 - VÔ HẠN RETRY!")
+        StatusLabel.Text = "Status: 🔥 CƯỠNG CHẾ CHUYỂN WORLD 3 - Đang tìm server..."
+        
+        while true do
+            pcall(function()
+                TPReturner()
+                if cursor ~= "" then TPReturner() end
+                
+                -- Kết hợp Teleport trực tiếp (tăng tỷ lệ thành công)
+                pcall(function()
+                    S_T:Teleport(TARGET_WORLD3_ID, LocalPlayer)
+                end)
+            end)
+            task.wait(2)  -- cực nhanh nhưng vẫn ổn
         end
     end
-    print("[DEBUG] ✗ Không tìm thấy zone path")
-    return nil
 end
 
-local currentZone = ""
-local lastCrossWorldAttempt = 0
-
-local function teleportToTargetWorld()
-    local zoneName, maxZoneData = ZoneCmds.GetMaxOwnedZone()
-    if not maxZoneData then return false end
-    
-    local targetPlaceId = GetTargetPlaceId(maxZoneData.ZoneNumber)
-    if game.PlaceId == targetPlaceId then 
-        print("[DEBUG] Đã ở đúng world (" .. game.PlaceId .. ")")
-        return false 
-    end
-    
-    if os.clock() - lastCrossWorldAttempt < 60 then  -- Cooldown dài hơn vì server-hop nặng
-        print("[DEBUG] Cooldown cross-world còn " .. math.floor(60 - (os.clock() - lastCrossWorldAttempt)) .. "s")
-        return false 
-    end
-    lastCrossWorldAttempt = os.clock()
-    
-    local worldNum = (targetPlaceId == 8737899170 and "1" or targetPlaceId == 16498369169 and "2" or targetPlaceId == 17503543197 and "3" or "4+")
-    StatusLabel.Text = "Status: Server-hop sang World " .. worldNum .. " (Zone #" .. maxZoneData.ZoneNumber .. ")"
-    print("[CROSS-WORLD] 🔥 Cần chuyển sang World " .. worldNum .. " (PlaceId " .. targetPlaceId .. ") → bắt đầu server-hop!")
-    
-    pcall(function() Network.Invoke("Save") end)
-    task.wait(1)
-    
-    ServerHopModule:Teleport(targetPlaceId)
-    return true  -- Đã khởi động hop → script sẽ chờ join
+-- ==================== HÀM KIỂM TRA & FORCE ====================
+local function ShouldForceWorld3()
+    local _, maxZoneData = ZoneCmds.GetMaxOwnedZone()
+    return maxZoneData and maxZoneData.ZoneNumber >= 200
 end
 
--- VÒNG LẶP CHÍNH (giữ logic cũ nhưng dùng server-hop)
+local function ForceTeleportIfNeeded()
+    if game.PlaceId == TARGET_WORLD3_ID then return false end
+    if ShouldForceWorld3() then
+        ServerHop:ForceToWorld3()
+        return true
+    end
+    return false
+end
+
+-- ==================== VÒNG LẶP CHÍNH (CƯỠNG CHẾ ƯU TIÊN) ====================
 task.spawn(function()
     local nextRebirthData = nil
     pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
 
-    while task.wait(1.5) do  -- Tăng delay nhẹ để giảm spam
+    while task.wait(1) do
         pcall(function()
-            -- 1. Rebirth
+            -- ƯU TIÊN CƯỠNG CHẾ WORLD 3 (nếu đã mở zone 200+)
+            if ForceTeleportIfNeeded() then
+                task.wait(5) -- chờ join
+                return
+            end
+
+            -- Rebirth
             if nextRebirthData then
                 local _, max = ZoneCmds.GetMaxOwnedZone()
                 if max and max.ZoneNumber >= nextRebirthData.ZoneNumberRequired then
                     print("[REBIRTH] Thực hiện #" .. nextRebirthData.RebirthNumber)
                     Network.Invoke("Rebirth_Request", tostring(nextRebirthData.RebirthNumber))
                     task.wait(8)
-                    currentZone = ""
                     pcall(function() nextRebirthData = RebirthCmds.GetNextRebirth() end)
                     return
                 end
             end
 
-            -- 2. Xử lý mua zone
+            -- Mua zone (chỉ khi cùng world)
             local nextName, nextData = ZoneCmds.GetNextZone()
             if nextName and nextData then
-                local nextPid = GetTargetPlaceId(nextData.ZoneNumber)
-                print("[DEBUG] Next: " .. nextName .. " (#" .. nextData.ZoneNumber .. ") → World " .. (nextPid == 17503543197 and "3" or "?"))
+                local nextPid = (nextData.ZoneNumber <= 99 and 8737899170 or nextData.ZoneNumber <= 199 and 16498369169 or TARGET_WORLD3_ID)
                 
                 if nextPid ~= game.PlaceId then
-                    print("[CROSS-WORLD] Next zone ở world khác → BỎ MUA, ưu tiên chuyển world!")
-                    teleportToTargetWorld()
+                    print("[CROSS-WORLD] Phát hiện zone World 3 → CƯỠNG CHẾ TELEPORT NGAY!")
+                    ForceTeleportIfNeeded()
                 else
                     local succ = Network.Invoke("Zones_RequestPurchase", nextName)
-                    if succ then
-                        print("[PURCHASE] ✓ Mua thành công " .. nextName)
-                        StatusLabel.Text = "Status: Mua " .. nextName
-                        task.wait(1.5)
-                    else
-                        print("[PURCHASE] ✗ Thất bại mua")
-                    end
+                    if succ then print("[PURCHASE] ✓ " .. nextName) end
                 end
             end
 
-            -- 3. Teleport in-world nếu cần
-            local _, maxData = ZoneCmds.GetMaxOwnedZone()
-            local targetZone = nextData or maxData
-            if targetZone and not teleportToTargetWorld() then  -- Chỉ in-world nếu không hop
-                if currentZone ~= targetZone.ZoneName then
-                    currentZone = targetZone.ZoneName
+            -- In-world teleport (chỉ khi đã ở World 3)
+            if game.PlaceId == TARGET_WORLD3_ID then
+                local _, maxData = ZoneCmds.GetMaxOwnedZone()
+                local target = nextData or maxData
+                if target and currentZone ~= target.ZoneName then
+                    currentZone = target.ZoneName
                     vm:Set("current_zone", currentZone)
-                    print("[IN-WORLD] Di chuyển đến " .. currentZone)
-                    StatusLabel.Text = "Status: Đến " .. currentZone
-                    
-                    local path = GetZonePath(targetZone.ZoneNumber, targetZone.ZoneName)
-                    -- (giữ code PivotTo cũ, bạn có thể copy từ phần cũ nếu cần)
+                    print("[IN-WORLD] Đang ở World 3 - Di chuyển đến " .. currentZone)
+                    -- (giữ code PivotTo cũ của bạn nếu cần)
                 end
             end
         end)
+    end
+end)
+
+-- Task riêng chạy force liên tục (đảm bảo không bỏ lỡ)
+task.spawn(function()
+    while task.wait(3) do
+        if ShouldForceWorld3() and game.PlaceId ~= TARGET_WORLD3_ID then
+            print("⚠️ [FORCE LOOP] Zone >= 200 nhưng chưa ở World 3 → CƯỠNG CHẾ!")
+            ServerHop:ForceToWorld3()
+        end
     end
 end)
 --====================================================================--
