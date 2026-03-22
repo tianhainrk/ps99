@@ -397,80 +397,53 @@ end)
 --====================================================================--
 --//        PHẦN 4: AUTO RANK REWARDS & MUA SLOTS (EGG + PET)       //--
 --====================================================================--
-local lastRankTitle = "" 
 
 local function CheckAndBuyEggSlots()
     pcall(function()
         local PurchasedSlots = Save.Get()["EggSlotsPurchased"] or 0
         local MaxSlots = RankCmds.GetMaxPurchasableEggSlots()
         
+        -- Nếu số slot hiện tại nhỏ hơn giới hạn của Rank, thử mua 1 slot
         if PurchasedSlots < MaxSlots then
-            StatusLabel.Text = "Status: Upgrading Egg Slots..."
-            while PurchasedSlots < MaxSlots do
-                local EggSlotInfo = RankCmds.GetEggBundle(PurchasedSlots + 1)
-                if Network.Invoke("EggHatchSlotsMachine_RequestPurchase", EggSlotInfo) then
-                    PurchasedSlots = PurchasedSlots + 1
-                    task.wait(0.5) 
-                else
-                    break 
-                end
+            local EggSlotInfo = RankCmds.GetEggBundle(PurchasedSlots + 1)
+            if Network.Invoke("EggHatchSlotsMachine_RequestPurchase", EggSlotInfo) then
+                StatusLabel.Text = "Status: Bought 1 Egg Slot!"
+                task.wait(0.5) 
             end
-            StatusLabel.Text = "Status: Egg Slots Upgraded!"
         end
     end)
 end
 
 local function CheckAndBuyPetSlots()
     pcall(function()
-        -- Lưu ý: Các key như "PetEquipsPurchased" hoặc Remote "PetEquipsMachine_RequestPurchase" 
-        -- có thể cần điều chỉnh nhẹ nếu API của game có tên khác.
         local PurchasedPetSlots = Save.Get()["PetEquipsPurchased"] or 0
         local MaxPetSlots = RankCmds.GetMaxPurchasablePetEquips()
         
+        -- Nếu số slot hiện tại nhỏ hơn giới hạn của Rank, thử mua 1 slot
         if PurchasedPetSlots < MaxPetSlots then
-            StatusLabel.Text = "Status: Upgrading Pet Slots..."
-            while PurchasedPetSlots < MaxPetSlots do
-                local PetSlotInfo = RankCmds.GetPetEquipBundle(PurchasedPetSlots + 1)
-                
-                -- Thực hiện gửi lệnh mua slot Pet
-                if Network.Invoke("PetEquipsMachine_RequestPurchase", PetSlotInfo) then
-                    PurchasedPetSlots = PurchasedPetSlots + 1
-                    task.wait(0.5) 
-                else
-                    break 
-                end
+            local PetSlotInfo = RankCmds.GetPetEquipBundle(PurchasedPetSlots + 1)
+            if Network.Invoke("PetEquipsMachine_RequestPurchase", PetSlotInfo) then
+                StatusLabel.Text = "Status: Bought 1 Pet Slot!"
+                task.wait(0.5) 
             end
-            StatusLabel.Text = "Status: Pet Slots Upgraded!"
         end
     end)
 end
 
 task.spawn(function()
-    pcall(function()
-        lastRankTitle = RankCmds.GetTitle()
-        -- Tự động kiểm tra và mua cả Egg & Pet Slots ở lần chạy đầu tiên
-        CheckAndBuyEggSlots()
-        task.wait(1)
-        CheckAndBuyPetSlots()
-    end)
-
     while task.wait(5) do
         if _G.PreparingToHop then break end
         
         pcall(function()
+            -- 1. KIỂM TRA VÀ MUA SLOTS (Tự động chạy mỗi 5 giây)
+            CheckAndBuyEggSlots()
+            CheckAndBuyPetSlots()
+
+            -- 2. NHẬN THƯỞNG RANK
             local currentSave = Save.Get()
             local currentTitle = RankCmds.GetTitle()
-            
-            -- TỰ ĐỘNG MUA SLOTS KHI RANK UP
-            if currentTitle ~= lastRankTitle then
-                lastRankTitle = currentTitle
-                CheckAndBuyEggSlots() 
-                task.wait(1) -- Nghỉ 1 nhịp để tránh spam server
-                CheckAndBuyPetSlots()
-            end
-
-            -- NHẬN THƯỞNG RANK
             local totalStars = 0
+            
             if RanksDirectory[currentTitle] and RanksDirectory[currentTitle].Rewards then
                 for i, v in pairs(RanksDirectory[currentTitle].Rewards) do
                     totalStars = totalStars + v.StarsRequired
