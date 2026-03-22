@@ -416,16 +416,16 @@ end
 
 local function CheckAndBuyPetSlots()
     pcall(function()
+        -- 1. Lấy số lượng slot đã mua (Biến này ở console báo 11, nhưng cứ dùng nó làm mốc tính toán)
+        local currentEquips = Save.Get()["PetSlotsPurchased"] or 0
         
-        local PurchasedPetSlots = Save.Get()["PetSlotsPurchased"] or 0
-        local MaxPetSlots = RankCmds.GetMaxPurchasablePetEquips()
+        -- 2. Dùng đúng hàm check Max Slots từ script cũ
+        local MaxPetSlots = RankCmds.GetMaxPurchasableEquipSlots()
         
-        -- Nếu số slot hiện tại nhỏ hơn giới hạn của Rank, thử mua 1 slot
-        if PurchasedPetSlots < MaxPetSlots then
-            local PetSlotInfo = RankCmds.GetPetEquipBundle(PurchasedPetSlots + 1)
-            
-            -- Gửi lệnh mua lên Server
-            if Network.Invoke("PetEquipsMachine_RequestPurchase", PetSlotInfo) then
+        -- 3. Tiến hành mua nếu chưa đạt giới hạn
+        if currentEquips < MaxPetSlots then
+            -- Truyền ĐÚNG tham số là (currentEquips + 1) và gọi ĐÚNG Remote
+            if Network.Invoke("EquipSlotsMachine_RequestPurchase", currentEquips + 1) then
                 StatusLabel.Text = "Status: Bought 1 Pet Slot!"
                 task.wait(0.5) 
             end
